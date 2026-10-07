@@ -1,0 +1,14 @@
+# dsh-model-auto-router bundle patch: inserts the model router entry into a profile's layer stack.
+#
+# One row mounts the Host half. The browser half — the settings page that edits
+# this plugin's config file — is declared by `dsh.client` in package.json and
+# binds to the row whose `name` is the bare package name, which is this one.
+# A subpath row (e.g. `dsh-model-auto-router/client`) would not carry it.
+- insert:
+    - id: dsh-model-auto-router
+      name: 'dsh-model-auto-router'
+      # The settings page is opt-out for headless compositions:
+      # config: { ui: false }
+      # Opt in to the in-process self test while developing:
+      # selfTest: true
+      # selfTestOut: 'F:/AI/dsh-model-auto-router/selftest-report.json'

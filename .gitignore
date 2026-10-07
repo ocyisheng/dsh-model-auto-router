@@ -1,0 +1,21 @@
+# Dependencies installed by the profile's package manager.
+node_modules/
+
+# Screenshots and artifacts written by dsh-vision-router while probing the
+# HTML harnesses in this repository.
+.dsh-vision-router/
+
+# The in-process self test report (`selfTestOut`).
+selftest-report.json
+*.selftest.json
+
+# Editor and OS noise.
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Logs
+*.log
+npm-debug.log*

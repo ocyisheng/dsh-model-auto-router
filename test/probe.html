@@ -1,0 +1,52 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>dsh-model-auto-router — verification</title>
+<style>
+  body { font: 14px/1.65 system-ui, sans-serif; margin: 32px auto; max-width: 780px; color: #1a1a1a; }
+  h1 { font-size: 20px; } h2 { font-size: 15px; margin-top: 30px; }
+  code, pre { background: #f4f4f5; padding: 2px 6px; border-radius: 4px; font-size: 13px; }
+  pre { padding: 12px; overflow-x: auto; }
+  .note { background: #fff8e1; border-left: 3px solid #f0b429; padding: 10px 14px; margin: 16px 0; }
+</style>
+<body>
+<h1>dsh-model-auto-router — how to verify</h1>
+
+<p>This plugin ships plain ESM JavaScript with a pure, host-free core
+(<code>src/pool.js</code>, <code>src/health.js</code>, <code>src/router.js</code>),
+so the same behavioural suite can run in three ways. Pick whichever fits.</p>
+
+<h2>1. Node test runner <span style="color:#137333">— primary</span></h2>
+<pre>cd F:/AI/dsh-model-auto-router
+node --test test/</pre>
+
+<h2>2. In-process self test <span style="color:#137333">— no tooling needed</span></h2>
+<p>Useful when Node is not on <code>PATH</code> (this environment, for example).
+The plugin runs the suite inside the DSH host at boot and can write a JSON report.
+Enable it in the profile entry:</p>
+<pre>- insert:
+    - id: dsh-model-auto-router
+      name: 'dsh-model-auto-router'
+      selfTest: true
+      selfTestOut: 'F:/AI/dsh-model-auto-router/selftest-report.json'</pre>
+<p>Or set <code>DSH_MODEL_AUTO_ROUTER_SELFTEST=1</code>. Each failure is logged as
+<code>model-auto-router: self test FAILED — &lt;case&gt;: &lt;reason&gt;</code>, and the
+summary as <code>model-auto-router: self test N/M passed</code>.</p>
+
+<div class="note">
+<b>Note.</b> Enable this before starting DSH, and note that the host caches plugin
+modules in its ESM registry — a plugin toggle or a DSH restart is needed for a
+changed file to be re-imported.
+</div>
+
+<h2>What the suite covers</h2>
+<ul>
+  <li>pool parsing: duplicate rejection, provider inheritance, strategy validation</li>
+  <li>all five selection strategies, including weight extremes</li>
+  <li>failure classification: unavailable (429 / 5xx / overload / DNS) versus
+      request fault (400 / 401 / context-length)</li>
+  <li>health thresholds, cooldown expiry, snapshot recovery</li>
+  <li>route pinning, subagent pool separation, compaction exclusion</li>
+  <li>failover to the next candidate, fall-through to the fallback pool, and
+      <em>not</em> claiming a retry when nowhere healthy is left</li>
+</ul>
+</body>

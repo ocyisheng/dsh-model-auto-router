@@ -1,0 +1,50 @@
+{
+  "$comment": "Copy this file to ~/.dsh/model-auto-router.json to activate dsh-model-auto-router. Every field is optional; without pools the plugin stays out of the way.",
+  "$comment_routes": "A provider is a route registered with the host's llm service, and a model is whatever that provider's adapter dispatches — neither is free-form. The settings page (Settings -> Model Router) lists the routes this host actually has and suggests their models, so prefer editing there. The names below are examples.",
+
+  "enabled": true,
+
+  "$comment_main": "The main (root) agent draws from this pool.",
+  "mainPool": "main",
+
+  "$comment_subagent": "Subagents draw from this pool. Omit it, or set inheritMain to false, to leave delegation on DSH's own model.",
+  "subagentPool": "subagent",
+
+  "$comment_fallback": "Last-resort routes, tried when the agent's own pool has no healthy candidate left.",
+  "fallbackPool": "backup",
+
+  "health": {
+    "$comment_threshold": "Consecutive unavailable failures before a route is demoted. 1 = switch on the first error.",
+    "failureThreshold": 2,
+    "$comment_cooldown": "How long a demoted route is skipped before it is retried.",
+    "cooldownMs": 60000
+  },
+
+  "pools": {
+    "main": {
+      "provider": "deepseek",
+      "strategy": "primary-failover",
+      "candidates": [
+        { "model": "deepseek-chat" },
+        { "model": "deepseek-reasoner" }
+      ]
+    },
+
+    "subagent": {
+      "provider": "deepseek",
+      "strategy": "round-robin",
+      "candidates": [
+        { "model": "deepseek-chat" },
+        { "model": "deepseek-chat", "weight": 1 }
+      ]
+    },
+
+    "backup": {
+      "strategy": "primary-failover",
+      "candidates": [
+        { "provider": "deepseek", "model": "deepseek-chat" },
+        { "provider": "openai", "model": "gpt-5" }
+      ]
+    }
+  }
+}

@@ -584,6 +584,40 @@ const CASES = [
     eq(snapshot.main, undefined, 'no main pool')
     eq(snapshot.assignments, [], 'no assignments')
   }],
+
+  ['a 429 that quotes a retry-after demotes for the provider delay, not cooldownMs', () => {
+    const tracker = new RouteHealthTracker({ failureThreshold: 1, cooldownMs: 60_000 })
+    const retryAfterMs = 39_315_000
+    const demoted = tracker.recordFailure('p/m', 10_000, { retryAfterMs })
+    ok(demoted, 'demoted on the first failure')
+    // Still cooling at 1h after the 60s `cooldownMs` would have released it.
+    eq(tracker.isUnhealthy('p/m', 10_000 + 61_000), true, 'still cooling past cooldownMs')
+    // But recovered once the provider delay elapses.
+    eq(tracker.isUnhealthy('p/m', 10_000 + retryAfterMs + 1), false, 'recovered after retry-after')
+  }],
+  ['classifyFailure surfaces a provider retry-after from a 429', () => {
+    const failure = { message: 'Rate limit exceeded.', code: 'RATE_LIMIT', status: 429, providerRetryAfterMs: 29_659_000 }
+    const c = classifyFailure(failure)
+    eq(c.unavailable, true, 'unavailable')
+    eq(c.retryAfterMs, 29_659_000, 'retry-after carried through')
+  }],
+
+  ['a failover does not see-saw back to the primary before the fallback succeeds', () => {
+    const router = makeRouter({ health: { failureThreshold: 1, cooldownMs: 50_000 } })
+    const main = agent('s1')
+    // Pin the primary first by selecting it.
+    eq(router.select({ agent: main }).model, 'deepseek-chat', 'primary first')
+    // Primary fails over to the secondary.
+    router.handleFailure({ agent: main, provider: 'deepseek', failure: { status: 503 } })
+    eq(router.select({ agent: main }).model, 'deepseek-reasoner', 'on the secondary')
+    // Prime the primary back to healthy immediately (simulating a very short
+    // retry-after / a provider that recovered) — it must NOT be reclaimed yet.
+    router._health.recordSuccess('deepseek/deepseek-chat')
+    eq(router.select({ agent: main }).model, 'deepseek-reasoner', 'still on the secondary, no ping-pong')
+    // Now the secondary succeeds: the hold lifts and the primary is welcome back.
+    router.select({ agent: main })
+    eq(router.select({ agent: main }).model, 'deepseek-chat', 'primary reclaimed after a success')
+  }],
 ]
 
 /**

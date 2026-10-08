@@ -43,6 +43,7 @@ export const REASON = /** @type {const} */ ({
   SELECTED: 'selected',
   KEPT_CURRENT: 'kept-current',
   FAILOVER: 'failover',
+  RESTORED: 'restored-primary',
 })
 
 /**
@@ -71,6 +72,32 @@ class AgentState {
      * @type {string | undefined}
      */
     this.previousRoute = undefined
+    /**
+     * The route a failover moved *away* from for this agent, while the route it
+     * moved *to* (the fallback) is still the live pin.
+     *
+     * The anti-thrash hold lives here rather than in the global health tracker
+     * on purpose: the hold is per-agent (each session's fallback must prove
+     * itself before the primary is welcome back) and it must not prolong a
+     * route's global cooldown. Once the fallback completes a successful call
+     * (`recordSuccess` on the agent), this is cleared and the next selection may
+     * return to the primary — so even without a provider retry-after, a
+     * primary/fallback pair that both fail briefly settles on one of them
+     * instead of seesawing every step.
+     *
+     * @type {string | undefined}
+     */
+    this.failedRoute = undefined
+    /**
+     * Whether the route we moved to after a failover (the fallback) has
+     * completed at least one successful call. Set true by `select` once the
+     * fallback is re-pinned on a callback; consumed by the anti-thrash hold so
+     * the primary is reclaimed only after the fallback has proven itself — not
+     * the instant the primary's cooldown expires.
+     *
+     * @type {boolean}
+     */
+    this.reclaimReady = false
     /** @type {string | undefined} */
     this.pool = undefined
     /** @type {string | undefined} */
@@ -79,6 +106,22 @@ class AgentState {
     this.failoverCount = 0
     /** Captured at first selection so failure handling never re-derives it. */
     this.isSubagent = isSubagent
+  }
+
+  /**
+   * Note a successful call on this agent's route.
+   *
+   * A success means the route we are currently pinned to (after a failover,
+   * that is the fallback) actually works for this agent. The anti-thrash hold
+   * on the route we abandoned (`failedRoute`) is NOT released here — instead
+   * `select` sets `reclaimReady` only once the fallback has been re-pinned on a
+   * callback, and reclaims the primary only when `failedRoute` has also healed.
+   * That ordering is what prevents immediate see-sawing back to a primary that
+   * recovered in the same instant. Clearing the hold here (the old behaviour)
+   * released it a step too early, so the hold never actually bit.
+   */
+  recordSuccess() {
+    // No-op: the hold's release is sequenced in `select`, not here.
   }
 }
 
@@ -252,6 +295,65 @@ export class ModelAutoRouter {
     // global fallback pool.
     const healthy = this._healthyCandidates(primary)
 
+    // Anti-thrash hold. If a failover opened it, `state.failedRoute` is the route
+    // we abandoned. While it is open we keep the agent on its current healthy
+    // route and NOT hand it back to `failedRoute` — even if `failedRoute` has
+    // thawed globally — until the route we moved TO has delivered a success (so a
+    // primary that recovered instantly cannot see-saw with a fallback that has
+    // not proven itself) AND `failedRoute` has also healed. This is what stops
+    // two rate-limiting models from oscillating every step (mimo -> kimi ->
+    // mimo -> kimi ...). The hold only blocks `failedRoute`, never any other
+    // healthy candidate.
+    if (state.failedRoute) {
+      const failedHealthy = healthy.some(c => c.label === state.failedRoute)
+      if (failedHealthy && state.reclaimReady) {
+        // `failedRoute` has healed and the route we moved to has succeeded once:
+        // reclaim the primary (its order in the pool), closing the hold.
+        state.route = state.failedRoute
+        state.failedRoute = undefined
+        state.reclaimReady = false
+        state.pool = own?.name ?? primary.name
+        state.lastReason = REASON.RESTORED
+        // NOTE: do NOT call `_health.recordSuccess` here — for a primary demoted
+        // by a provider retry-after, that would clear the provider-mandated
+        // cooldown and reintroduce the thrash we are trying to prevent. The
+        // global cooldown runs its own course; this agent simply resumes using
+        // the route once it is eligible again.
+        this._usage.set(state.route, (this._usage.get(state.route) ?? 0) + 1)
+        if (state.route === primary.candidates[0]?.label) {
+          this._noteChange(agent?.id, undefined, state.route, REASON.RESTORED)
+        }
+        return this._asRoute(state.route, primary)
+      }
+      // Either the abandoned route is still cooling, or it healed but the route
+      // we moved to has not yet proven itself: keep the healthy route we are on
+      // (or the first other healthy one) and stay put.
+      const keep = (state.route && healthy.some(c => c.label === state.route))
+        ? state.route
+        : healthy.find(c => c.label !== state.failedRoute)?.label
+      if (keep) {
+        const wasPinned = state.route === keep
+        const previous = state.route ?? state.previousRoute
+        state.previousRoute = undefined
+        state.route = keep
+        state.pool = own?.name ?? primary.name
+        if (wasPinned) {
+          // A continued pin means the previous call on `keep` completed
+          // successfully, so the route we moved to has now proven itself: the
+          // hold is ready to lift as soon as `failedRoute` also heals.
+          state.lastReason = REASON.KEPT_CURRENT
+          state.reclaimReady = true
+        } else {
+          // First time reaching the fallback through the hold: this *is* the
+          // failover itself, so report it as such rather than a fresh pick.
+          state.lastReason = REASON.FAILOVER
+          if (previous !== keep) this._noteChange(agent?.id, previous, keep, REASON.FAILOVER)
+        }
+        this._usage.set(keep, (this._usage.get(keep) ?? 0) + 1)
+        return this._asRoute(keep, primary)
+      }
+    }
+
     // A route already chosen for this agent stays pinned while it is healthy.
     // Stability matters: prompt caches are keyed by model, so reshuffling every
     // step would pay full input cost on every call. This is checked after
@@ -384,7 +486,10 @@ export class ModelAutoRouter {
 
     let demoted = false
     if (route) {
-      demoted = this._health.recordFailure(route)
+      // Honour a provider retry-after (e.g. a 429 that says "come back in N ms"):
+      // the cooldown becomes N, not the fixed `cooldownMs`, so the route stays
+      // demoted for the whole window instead of thawing and re-failing.
+      demoted = this._health.recordFailure(route, undefined, { retryAfterMs: classification.retryAfterMs })
       if (demoted) {
         this._log(`model-auto-router: route ${route} demoted (${classification.reason})`)
       }
@@ -406,8 +511,13 @@ export class ModelAutoRouter {
     state.failoverCount++
     // Drop the pin so `select` recomputes against the now-unhealthy route — but
     // record what is being left first, so the switch is reported with its real
-    // origin instead of as a selection out of nowhere.
+    // origin instead of as a selection out of nowhere. `failedRoute` is what the
+    // anti-thrash hold (in `select`) keys off: only a *demotion* opens it, so a
+    // sub-threshold failure (still healthy) is just a retry and leaves the hold
+    // untouched. While open, the abandoned route stays off-limits for this agent
+    // until the route we moved to succeeds once and the primary has also healed.
     state.previousRoute = route
+    if (demoted) state.failedRoute = route
     state.route = undefined
     return { kind: 'retry' }
   }

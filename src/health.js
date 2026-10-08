@@ -211,8 +211,8 @@ function statusIsUnavailable(status) {
 /**
  * Classify one `LlmFailure` for the router.
  *
- * @param {{ code?: string, status?: number, message?: string }} failure
- * @returns {{ unavailable: boolean, reason: string }}
+ * @param {{ code?: string, status?: number, message?: string, providerRetryAfterMs?: number, retryAfterMs?: number }} failure
+ * @returns {{ unavailable: boolean, reason: string, retryAfterMs?: number }}
  */
 export function classifyFailure(failure) {
   if (!failure || typeof failure !== 'object') {
@@ -226,6 +226,15 @@ export function classifyFailure(failure) {
   const upper = raw.toUpperCase()
   const status = typeof failure.status === 'number' ? failure.status : undefined
   const message = typeof failure.message === 'string' ? failure.message : ''
+
+  // A provider that rate-limits quotes how long to wait before retrying. The
+  // router must honour it: demoting a route for the fixed `cooldownMs` and then
+  // letting it thaw while the provider is still saying "come back in 11 hours"
+  // produces the exact ping-pong between the primary and the fallback that this
+  // project's logs showed (mimo rate-limited, then kimi, then mimo again, on a
+  // 60-second loop for the whole window). The retry-after is carried both as a
+  // dedicated field and, occasionally, only inside the message.
+  const retryAfterMs = readRetryAfterMs(failure, message)
 
   if (REQUEST_FAULT_CODES.has(code)) {
     return { unavailable: false, reason: `request-fault:${raw}` }
@@ -251,12 +260,12 @@ export function classifyFailure(failure) {
   const quoted = statusInMessage(message)
   if (quoted !== undefined) {
     return statusIsUnavailable(quoted)
-      ? { unavailable: true, reason: `status-in-message:${quoted}` }
+      ? { unavailable: true, reason: `status-in-message:${quoted}`, retryAfterMs }
       : { unavailable: false, reason: `status-in-message:${quoted}` }
   }
 
   if (MODEL_UNAVAILABLE_CODES.has(code) || SERVICE_FAULT_CODES.has(code)) {
-    return { unavailable: true, reason: `model:${raw}` }
+    return { unavailable: true, reason: `model:${raw}`, retryAfterMs }
   }
 
   // Transport codes are conventionally upper case.
@@ -270,11 +279,48 @@ export function classifyFailure(failure) {
 
   if (status !== undefined) {
     return statusIsUnavailable(status)
-      ? { unavailable: true, reason: `status:${status}` }
+      ? { unavailable: true, reason: `status:${status}`, retryAfterMs }
       : { unavailable: false, reason: `status:${status}` }
   }
 
   return { unavailable: false, reason: code ? `code:${code}` : 'unknown' }
+}
+
+/**
+ * Extract a provider-supplied retry delay, in milliseconds, from a failure.
+ *
+ * Providers quote it three ways across the adapters we see: a dedicated
+ * `providerRetryAfterMs` (the our-free-model family), a `retryAfterMs` field,
+ * and — for in-stream rate-limit envelopes that arrive without structured
+ * fields — prose like `Retry after 3593 seconds` inside the message. Only the
+ * first two are asserted in tests today, but the prose fallback costs nothing
+ * and covers the case the adapter did not standardize.
+ *
+ * @param {{ providerRetryAfterMs?: number, retryAfterMs?: number }} failure
+ * @param {string} message
+ * @returns {number | undefined}
+ */
+export function readRetryAfterMs(failure, message) {
+  const fromField = typeof failure.providerRetryAfterMs === 'number'
+    ? failure.providerRetryAfterMs
+    : (typeof failure.retryAfterMs === 'number' ? failure.retryAfterMs : undefined)
+  if (typeof fromField === 'number' && Number.isFinite(fromField) && fromField > 0) {
+    return fromField
+  }
+
+  // `Retry after 3593 seconds` / `retry after 5s`.
+  const match = /retry after\s+(\d+(?:\.\d+)?)\s*(second|sec|s|minute|min|m|hour|hr|h)?/i.exec(message)
+  if (match) {
+    const value = Number(match[1])
+    const unit = (match[2] ?? 'second').toLowerCase()
+    const scale = unit.startsWith('h') ? 3_600_000
+      : unit.startsWith('m') ? 60_000
+      : 1_000
+    const ms = value * scale
+    if (Number.isFinite(ms) && ms > 0) return ms
+  }
+
+  return undefined
 }
 
 /**
@@ -338,18 +384,29 @@ export class RouteHealthTracker {
    * the router moves on", and nothing here second-guesses it: no class of
    * failure is special-cased to skip it.
    *
+   * When the failure itself carried a provider retry-after (`retryAfterMs`,
+   * e.g. from a 429), the cooldown is that delay rather than the fixed
+   * `cooldownMs`. Honouring it is what stops the primary/fallback ping-pong:
+   * a route rate-limited for hours must stay demoted for the hours, not thaw
+   * every `cooldownMs` and immediately fail over again.
+   *
    * @param {string} key
    * @param {number} [now]
+   * @param {{ retryAfterMs?: number }} [hint]
    * @returns {boolean} true when this failure demoted the route
    */
-  recordFailure(key, now = Date.now()) {
+  recordFailure(key, now = Date.now(), hint = {}) {
     const previous = this._state.get(key)
     const failures = (previous?.failures ?? 0) + 1
     if (failures < this.failureThreshold) {
       this._state.set(key, { failures, successes: 0, until: previous?.until ?? 0 })
       return false
     }
-    this._state.set(key, { failures, successes: 0, until: now + this.cooldownMs })
+    const retryAfterMs = typeof hint?.retryAfterMs === 'number' && hint.retryAfterMs > 0
+      ? hint.retryAfterMs
+      : undefined
+    const cooldown = retryAfterMs && retryAfterMs > this.cooldownMs ? retryAfterMs : this.cooldownMs
+    this._state.set(key, { failures, successes: 0, until: now + cooldown })
     return true
   }
 

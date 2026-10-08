@@ -1,6 +1,6 @@
 {
   "name": "dsh-model-auto-router",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "面向 DeepSeek Harness 主 Agent 与子 Agent 的自主模型池路由与自动故障转移:为每个会话/子 Agent 从选定的模型池中选取路线,当前模型不可用时自动切换到备用路线,并可在设置页面编辑模型池。",
   "type": "module",
   "main": "index.js",

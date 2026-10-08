@@ -46,6 +46,7 @@ window.__ModuleLoader__.load({
     const LIMITS = {
       failureThreshold: { min: 1, max: 100 },
       cooldownMs: { min: 1000, max: 86_400_000 },
+      weight: { min: 0.01, max: 1000 },
     }
 
     /**
@@ -118,6 +119,8 @@ window.__ModuleLoader__.load({
         'list.down': '下移',
         'list.remove': '移除',
         'list.strategy': '策略',
+        'list.weight': '权重',
+        'list.weightHint': '仅「按权重随机」策略使用；相对值，越大越常被选中。',
 
 
         'health.failureThreshold': '降级阈值',
@@ -202,6 +205,8 @@ window.__ModuleLoader__.load({
         'list.down': 'Move down',
         'list.remove': 'Remove',
         'list.strategy': 'Strategy',
+        'list.weight': 'Weight',
+        'list.weightHint': 'Only used by the weighted-random strategy; relative — higher values are drawn more often.',
 
 
         'health.failureThreshold': 'Demote after',
@@ -306,6 +311,9 @@ window.__ModuleLoader__.load({
 .mr_routecell{display:flex;align-items:baseline;gap:8px;min-width:0;flex:1;flex-wrap:wrap}
 .mr_routecell .mr_mono{font-size:12px;overflow:hidden;text-overflow:ellipsis}
 .mr_provider{font-size:11px;color:var(--dsw-alias-label-tertiary)}
+.mr_weight{display:flex;align-items:center;gap:6px;flex:none}
+.mr_weightlabel{font-size:11px;color:var(--dsw-alias-label-tertiary);white-space:nowrap}
+.mr_weightinput{width:64px;flex:none}
 .mr_itemtools{display:flex;gap:3px;margin-left:auto;flex:none}
 .mr_icon{font:inherit;font-size:12px;line-height:1;width:23px;height:23px;border-radius:var(--dsw-radius-xs);border:1px solid var(--dsw-alias-border-l1);background:transparent;color:var(--dsw-alias-label-tertiary);cursor:pointer}
 .mr_icon:hover:not(:disabled){border-color:var(--dsw-alias-state-business-primary);color:var(--dsw-alias-label-primary)}
@@ -721,7 +729,15 @@ window.__ModuleLoader__.load({
      * stays copyable and the order is still legible at a glance.
      */
     function RouteList(props) {
-      const { routes, t, onChange, empty } = props
+      const { routes, t, onChange, empty, strategy } = props
+      const showWeight = strategy === 'weighted-random'
+
+      const setWeight = (index, value) => {
+        const next = routes.slice()
+        const parsed = Number(value)
+        next[index] = { ...next[index], weight: Number.isFinite(parsed) && parsed > 0 ? parsed : 1 }
+        onChange(next)
+      }
 
       if (routes.length === 0) return h('p', { className: 'mr_note' }, empty)
 
@@ -733,6 +749,20 @@ window.__ModuleLoader__.load({
       h('span', { className: 'mr_routecell' },
         h('span', { className: 'mr_mono' }, route.model),
         route.provider === '' ? null : h('span', { className: 'mr_provider' }, route.provider)),
+      showWeight
+        ? h('label', { className: 'mr_weight', title: t('list.weightHint') },
+          h('span', { className: 'mr_weightlabel' }, t('list.weight')),
+          h('input', {
+            className: 'mr_input mr_weightinput',
+            type: 'number',
+            min: String(LIMITS.weight.min),
+            max: String(LIMITS.weight.max),
+            step: '0.01',
+            value: Number.isFinite(Number(route.weight)) && Number(route.weight) > 0 ? route.weight : 1,
+            'aria-label': t('list.weight'),
+            onChange: event => setWeight(index, event.target.value),
+          }))
+        : null,
       h('span', { className: 'mr_itemtools' },
         h('button', {
           type: 'button',
@@ -952,6 +982,7 @@ window.__ModuleLoader__.load({
           routes: lists[role],
           t,
           empty,
+          strategy: poolStrategy(draft, role),
           onChange: routes => setRole(role, routes),
         }),
       })

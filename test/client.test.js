@@ -333,6 +333,12 @@ test('the page renders its whole tree once state has arrived', () => {
   // The live line names the route the router is on right now.
   assert.ok(rendered.includes('deepseek/deepseek-chat'), 'the live status names the current route')
 
+  // The weighted-random backup pool must expose a per-route weight input,
+  // not just its order — otherwise the strategy is unconfigurable from the UI.
+  assert.ok(rendered.includes('list.weight'), 'the weighted-random list shows the weight label')
+  assert.ok(rendered.includes('mimo-v2.5-free'), 'the weighted candidate rendered')
+  assert.ok(rendered.includes('"value":3'), 'the weighted candidate shows its weight of 3')
+
   // The per-list strategy select is what keeps a `round-robin` pool expressible
   // in a view that otherwise shows order only.
   const selects = []

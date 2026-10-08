@@ -35,7 +35,7 @@ function splitLabel(label) {
   return index < 0 ? [label, ''] : [label.slice(0, index), label.slice(index + 1)]
 }
 
-/** Reason codes surfaced in `/model-auto-router status`. */
+/** Reason codes surfaced in the routing report. */
 export const REASON = /** @type {const} */ ({
   DISABLED: 'disabled',
   UNCONFIGURED: 'unconfigured',
@@ -556,7 +556,7 @@ export class ModelAutoRouter {
   }
 
   /**
-   * Force one agent onto a specific route until it calls `/model-auto-router auto`.
+   * Force one agent onto a specific route until the pin is released (route === undefined).
    * A bare model name resolves against the pool so the user need not type the
    * provider prefix.
    *
@@ -615,7 +615,7 @@ export class ModelAutoRouter {
   }
 
   /**
-   * A compact, human-readable report for `/model-auto-router status`.
+   * A compact, human-readable report for the `GET /report` endpoint.
    * @returns {string}
    */
   report() {
@@ -657,7 +657,7 @@ export class ModelAutoRouter {
   }
 
   /**
-   * Just the configured pools, for `/model-auto-router pools`.
+   * Just the configured pools, for the pools section of the report.
    * @returns {string}
    */
   reportPools() {
@@ -689,7 +689,8 @@ export class ModelAutoRouter {
    * branch on rather than a substring it has to parse back out of prose.
    *
    * Read-only: the page observes routing through this, and steers it only
-   * through the command, so there is exactly one writer for pool state.
+   * through its own config API (`PUT /config`), so there is exactly one writer
+   * for pool state.
    *
    * @returns {{
    *   enabled: boolean,

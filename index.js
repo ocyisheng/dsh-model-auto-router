@@ -17,7 +17,6 @@ import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 
 import { ModelAutoRouter } from './src/router.js'
-import { registerModelAutoRouterCommand } from './src/command.js'
 import { runSelfTest } from './src/selftest.js'
 import { API_PREFIX, createApiRoutes } from './src/api.js'
 import { createCatalogReader, createRouteObserver } from './src/catalog.js'
@@ -62,7 +61,6 @@ const DEFAULT_CONFIG_PATH = join(homedir(), '.dsh', 'model-auto-router.json')
  *
  * @typedef {object} HostContext
  * @property {{ get(id: string): unknown } | undefined} [agents]
- * @property {{ register(definition: unknown): () => void } | undefined} [commands]
  * @property {(services: string[], callback: (host: any) => void) => void} inject
  * @property {(callback: () => void, label?: string) => void} effect
  * @property {(event: string, listener: (...args: any[]) => unknown) => () => void} on
@@ -185,8 +183,8 @@ export function apply(ctx, config = {}) {
 
   loadInto()
 
-  // Wire the routing waterfalls. `agents` and `commands` are injected so the
-  // plugin also loads in a headless composition that has no commands surface.
+  // Wire the routing waterfalls. `agents` is injected so the plugin also loads
+  // in a headless composition that has no commands surface.
   ctx.inject(['agents'], host => {
     host.effect(() => {
       // `agent/request`: replace the frozen config for the coming step.
@@ -237,10 +235,6 @@ export function apply(ctx, config = {}) {
         offDisposed()
       }
     }, 'model-auto-router: routing')
-  })
-
-  ctx.inject(['commands'], host => {
-    host.effect(() => registerModelAutoRouterCommand(router, host.commands), 'model-auto-router: /model-auto-router command')
   })
 
   // The settings page. It lives in its own fiber so a composition with no web

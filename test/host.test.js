@@ -2,8 +2,8 @@
  * Host-wiring check for `index.js`.
  *
  * Verifies the plugin's `apply` contract against a minimal stand-in for the DSH
- * host: the two `agent/*` waterfalls it must install, the `/model-auto-router`
- * command it must register, and the `agent/disposed` cleanup.
+ * host: the two `agent/*` waterfalls it must install, and the `agent/disposed`
+ * cleanup.
  *
  * Run: node --test test/host.test.js
  */
@@ -144,7 +144,7 @@ test('the plugin exposes the name DSH registers it under', () => {
   assert.equal(name, 'dsh-model-auto-router')
 })
 
-test('apply wires routing, failure handling, cleanup and the command', (t) => {
+test('apply wires routing, failure handling and cleanup', (t) => {
   const fake = startPlugin(useConfig({
     mainPool: 'main',
     pools: { main: { provider: 'deepseek', candidates: ['deepseek-chat'] } },
@@ -153,7 +153,6 @@ test('apply wires routing, failure handling, cleanup and the command', (t) => {
   assert.equal(fake.handlersFor('agent/request').length, 1, 'must subscribe to agent/request')
   assert.equal(fake.handlersFor('agent/request-error').length, 1, 'must subscribe to agent/request-error')
   assert.equal(fake.handlersFor('agent/disposed').length, 1, 'must subscribe to agent/disposed')
-  assert.ok(fake.commands.has('model-auto-router'), 'must register /model-auto-router')
 })
 
 test('agent/request overrides provider and model but preserves other fields', async (t) => {

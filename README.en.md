@@ -179,7 +179,7 @@ an ordered list cannot show; everything else a pool can express lives in the fil
 Clearing a list empties the pool but does not delete it, since you may still be
 pointing at it from the file, or about to fill it again. The **Diagnostics**
 disclosure at the bottom carries the config path and a status-report toggle —
-the same text `/model-auto-router status` prints — without competing with the flow.
+the same routing status the settings page shows — without competing with the flow.
 
 The inventory draws on three sources, in descending order of authority:
 
@@ -294,12 +294,11 @@ inline through the profile entry.
 
 ## Inspect and steer at runtime
 
-```
-/model-auto-router status              # pools, per-agent assignments, cooling routes, recent switches
-/model-auto-router pools               # just the configured pools
-/model-auto-router use gpt-5           # pin this session to one route (bare model name works)
-/model-auto-router auto                # release the pin, resume pool selection
-```
+Routing state is shown live on the **settings page** (above): pool membership,
+per-agent assignments, cooling routes and recent switches are all there. Behind
+it sits the HTTP surface mounted at `/api/model-auto-router` (see "Settings-page
+HTTP API"); `GET /report` returns the same plain-text report the diagnostics
+panel shows, ready to copy-paste or poll from an external script.
 
 ---
 
@@ -327,7 +326,7 @@ The browser half is a thin renderer over three routes the Host half mounts at
 | `GET /state` | The config as an editable draft, plus the router's live state. |
 | `GET /catalog` | The provider/model routes this host can dispatch, plus the routes it has been observed dispatching. |
 | `PUT /config` | Validate a draft, write the file atomically, and reload the pools. |
-| `GET /report` | The same text `/model-auto-router status` prints. |
+| `GET /report` | Plain-text routing report (pools, assignments, cooling routes, recent switches), matching the diagnostics panel. |
 
 `/catalog` is separate from `/state` on purpose: state is polled every few
 seconds, while the inventory means asking every adapter — third-party I/O that
@@ -358,7 +357,7 @@ node --test                      # or: node --test test/
 | File | Covers |
 | --- | --- |
 | `test/router.test.js` | The behavioural suite in `src/selftest.js` — selection, failover, health, pinning, the structured snapshot. |
-| `test/host.test.js` | `index.js` against a stand-in host: the two waterfalls, the command, the settings API mount, and the `ui: false` path. |
+| `test/host.test.js` | `index.js` against a stand-in host: the two waterfalls, the settings API mount, and the `ui: false` path. |
 | `test/config-io.test.js` | The config layer: projection, validation, comment retention, round trips. |
 | `test/catalog.test.js` | The provider/model inventory: caching, adapter coercion, a hanging provider, a failing one, the runtime route observer, and the source hierarchy. |
 | `test/api.test.js` | The HTTP surface: state, catalog, save, refusal, and the trust fence. |

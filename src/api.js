@@ -6,7 +6,7 @@
  *   GET  /state    the router's live state plus the config as an editable draft
  *   GET  /catalog  the provider/model routes this host can actually dispatch
  *   PUT  /config   validate a draft, write the file, and hot-reload the pools
- *   GET  /report   the same text `/model-auto-router status` prints, for copy-paste
+ *   GET  /report   the plain-text routing report (pools, assignments, cooling routes, recent switches), for copy-paste
  *
  * The page edits the config *file*, never the router's internals: a save goes
  * through `writeConfig`, the file watcher notices, and the pools reload on the

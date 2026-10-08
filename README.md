@@ -102,7 +102,7 @@ dsh install .\dsh-model-auto-router
 
 **一个池就是一条有序的故障转移链,所以页面呈现的正是这件事。** 配置的单位是角色指向的具名池——这对文件是对的,对人是错的,因为人在想「agent 该按什么顺序用哪些模型」。所以三个列表**就是**池:每个编辑其角色已指向的那个池,只在列表第一次被填时才创建。策略保留为每个列表一个控件,因为 `round-robin` 等是在 **agent 之间**分摊,有序列表展示不了这件事;池能表达的其余内容都在文件里。
 
-清空列表会清空池但**不删除**池,因为你可能还在文件里指向它,或正准备重新填。底部的**诊断**折叠区承载配置路径和状态报告开关——与 `/model-auto-router status` 打印的文本相同——而不与主流程争夺注意力。
+清空列表会清空池但**不删除**池,因为你可能还在文件里指向它,或正准备重新填。底部的**诊断**折叠区承载配置路径和状态报告开关——与设置页呈现的路由状态一致——而不与主流程争夺注意力。
 
 模型清单来自三个来源,按可信度降序:
 
@@ -189,12 +189,7 @@ dsh install .\dsh-model-auto-router
 
 ## 运行时查看与干预
 
-```
-/model-auto-router status              # 池、各 agent 的指派、冷却中的路由、最近的切换
-/model-auto-router pools               # 仅已配置的池
-/model-auto-router use gpt-5           # 把本会话固定到一条路由(裸模型名也可)
-/model-auto-router auto                # 释放固定,恢复池选择
-```
+路由状态通过**设置页**(见上方"设置页")实时呈现:池成员、各 agent 的指派、冷却中的路由与最近的切换一目了然。其背后是挂载在 `/api/model-auto-router` 的 HTTP 接口(见"设置页的 HTTP 接口"),`GET /report` 返回与设置页诊断区一致的纯文本报告,可直接复制粘贴或供外部脚本轮询。
 
 ---
 
@@ -221,7 +216,7 @@ dsh install .\dsh-model-auto-router
 | `GET /state` | 配置作为可编辑草稿,加上 router 的实时状态。 |
 | `GET /catalog` | 本机能派发的 provider/model 路由,加上观察到其派发过的路由。 |
 | `PUT /config` | 校验草稿,原子写入文件,并重载池。 |
-| `GET /report` | 与 `/model-auto-router status` 打印的文本相同。 |
+| `GET /report` | 纯文本路由报告(池、指派、冷却路由、最近切换),与设置页诊断区一致。 |
 
 `/catalog` 刻意与 `/state` 分开:state 每几秒轮询一次,而取清单意味着询问每个适配器——第三方 I/O 不该挂在定时器上。宿主缓存它一分钟,为每个 provider 的探测设了超时上限,并把失败或卡住的 provider 当作它自己的一行说明,而不是当作空答案。
 
@@ -240,7 +235,7 @@ node --test                      # 或: node --test test/
 | 文件 | 覆盖 |
 | --- | --- |
 | `test/router.test.js` | `src/selftest.js` 中的行为套件——选择、故障转移、健康、固定、结构化快照。 |
-| `test/host.test.js` | `index.js` 对着一个替代宿主:两个瀑布、命令、设置 API 挂载,以及 `ui: false` 路径。 |
+| `test/host.test.js` | `index.js` 对着一个替代宿主:两个瀑布、设置 API 挂载,以及 `ui: false` 路径。 |
 | `test/config-io.test.js` | 配置层:投影、校验、注释保留、往返。 |
 | `test/catalog.test.js` | provider/model 清单:缓存、适配器强制整形、卡住的 provider、失败的 provider、运行时路由观察器,以及来源层级。 |
 | `test/api.test.js` | HTTP 接口:state、catalog、保存、拒绝,以及信任围栏。 |

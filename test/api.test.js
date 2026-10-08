@@ -295,7 +295,7 @@ test('the catalog route is behind the same trust fence as the rest', async (t) =
   assert.equal(res.state.status, 403)
 })
 
-test('GET /report returns the same text the command prints', async (t) => {
+test('GET /report returns the routing report text', async (t) => {
   const { handler } = setup(t, {
     mainPool: 'main',
     pools: { main: { provider: 'deepseek', candidates: ['deepseek-chat'] } },

@@ -67,8 +67,8 @@ window.__ModuleLoader__.load({
     // ── copy ──────────────────────────────────────────────────────────────────
     const DICT = {
       zh: {
-        nav: '模型路由',
-        title: '模型路由',
+        nav: '模型自主路由',
+        title: '模型自主路由',
         subtitle: '模型池路由 · 自动故障转移',
         loading: '正在读取配置…',
         loadFailed: '无法连接插件后端',
@@ -109,6 +109,7 @@ window.__ModuleLoader__.load({
         'picker.noMatch': '没有匹配的模型',
         'picker.refreshCatalog': '刷新目录',
         'picker.refreshState': '刷新状态',
+        'picker.toggleGroup': '展开或收起此 provider 的模型',
 
         'list.emptyMain': '还没有模型。',
         'list.emptySubagent': '留空即跟随主 Agent；只有需要子 Agent 用别的模型时才填。',
@@ -192,6 +193,7 @@ window.__ModuleLoader__.load({
         'picker.noMatch': 'No matching model',
         'picker.refreshCatalog': 'Refresh catalog',
         'picker.refreshState': 'Refresh state',
+        'picker.toggleGroup': 'Expand or collapse this provider\'s models',
 
         'list.emptyMain': 'No models yet.',
         'list.emptySubagent': 'Leave this empty to follow the main agent; fill it only when subagents should use different models.',
@@ -292,6 +294,10 @@ window.__ModuleLoader__.load({
 .mr_group{display:flex;flex-direction:column;gap:6px;padding:9px 10px;border-radius:var(--dsw-radius-sm);border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1)}
 .mr_grouphead{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .mr_groupname{font-size:12.5px;font-weight:600}
+.mr_grouptoggle{display:inline-flex;align-items:center;gap:6px;border:0;background:transparent;padding:0;color:inherit;font:inherit;font-size:12.5px;font-weight:600;cursor:pointer}
+.mr_grouptoggle:hover{color:var(--dsw-alias-state-business-primary)}
+.mr_chevron{display:inline-flex;align-items:center;justify-content:center;width:12px;flex:none;font-size:10px;color:var(--dsw-alias-label-tertiary);transition:transform .15s ease}
+.mr_chevron.open{transform:rotate(90deg)}
 .mr_badge{font-size:10.5px;padding:1px 7px;border-radius:var(--dsw-radius-xs);border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-tertiary);white-space:nowrap}
 .mr_list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px}
 .mr_item{display:flex;align-items:center;gap:9px;padding:6px 8px;border-radius:var(--dsw-radius-sm);border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1)}
@@ -606,13 +612,16 @@ window.__ModuleLoader__.load({
     /**
      * The inventory: what this machine can dispatch, one click from being in use.
      *
-     * A flat set of chips rather than a table with columns to fill in, because
-     * the operator's question is "which models do I have" and the answer should
-     * be one click from the ordered list below.
+     * Providers render as collapsible rows — a header that folds its models
+     * away, and the chips only when it is open — because the operator's
+     * question is first "which providers do I have" and only then "which of
+     * this one's models". A live filter opens every matching group, so
+     * searching never makes the user click twice.
      */
     function InventoryPicker(props) {
       const { catalog, t, isUsed, isUsedElsewhere, onAdd, onAddAll } = props
       const [filter, setFilter] = useState('')
+      const [collapsed, setCollapsed] = useState(() => new Set())
 
       if (catalog === undefined) return h('p', { className: 'mr_note' }, t('loading'))
 
@@ -629,6 +638,18 @@ window.__ModuleLoader__.load({
         groups.push({ provider, models })
       }
       const total = groups.reduce((sum, group) => sum + group.models.length, 0)
+
+      // With a filter live, every group that survives is a match worth showing,
+      // so the collapse state is suspended rather than honoured. The empty
+      // state below still tells the truth when nothing matched.
+      const isOpen = providerId => needle === '' ? !collapsed.has(providerId) : true
+
+      const toggle = providerId => setCollapsed(current => {
+        const next = new Set(current)
+        if (next.has(providerId)) next.delete(providerId)
+        else next.add(providerId)
+        return next
+      })
 
       return h('div', { className: 'mr_body' },
         groups.length > 0
@@ -649,7 +670,16 @@ window.__ModuleLoader__.load({
 
         groups.map(group => h('div', { key: group.provider.id, className: 'mr_group' },
           h('div', { className: 'mr_grouphead' },
-            h('span', { className: 'mr_groupname' }, group.provider.name),
+            h('button', {
+              type: 'button',
+              className: 'mr_groupname mr_grouptoggle',
+              'aria-expanded': isOpen(group.provider.id) ? 'true' : 'false',
+              title: t('picker.toggleGroup'),
+              onClick: () => toggle(group.provider.id),
+            },
+            h('span', { className: `mr_chevron ${isOpen(group.provider.id) ? 'open' : ''}` }, '▸'),
+            group.provider.name,
+            h('span', { className: 'mr_badge' }, String(group.models.length))),
             group.provider.live === false ? h('span', { className: 'mr_badge' }, t('catalog.dormant')) : null,
             group.provider.unlisted === true ? h('span', { className: 'mr_badge' }, t('catalog.unlisted')) : null,
             h('span', { className: 'mr_spacer' }),
@@ -658,25 +688,27 @@ window.__ModuleLoader__.load({
               className: 'mr_link',
               onClick: () => onAddAll(group.provider.id, group.models.map(model => model.id)),
             }, t('picker.addAll'))),
-          h('div', { className: 'mr_chips' }, group.models.map(model => {
-            const used = isUsed(group.provider.id, model.id)
-            // A model already in *another* list is still worth adding here — the
-            // same route in two lists is a legitimate fallback — but it should
-            // say so, or the picker looks like it has no idea what is already in
-            // use.
-            const elsewhere = !used && isUsedElsewhere?.(group.provider.id, model.id) === true
-            return h('button', {
-              key: model.id,
-              type: 'button',
-              className: 'mr_routechip' + (used ? ' used' : elsewhere ? ' elsewhere' : ''),
-              disabled: used,
-              title: used ? t('picker.added') : elsewhere ? t('picker.elsewhere') : t('picker.add'),
-              onClick: () => onAdd(group.provider.id, model.id),
-            },
-            used ? h('span', { className: 'mr_star' }, '✓') : elsewhere ? h('span', { className: 'mr_elsewhere' }) : null,
-            h('span', { className: 'mr_mono' }, model.id),
-            used ? null : h('span', { className: 'mr_chipadd' }, '＋'))
-          })))))
+          isOpen(group.provider.id)
+            ? h('div', { className: 'mr_chips' }, group.models.map(model => {
+              const used = isUsed(group.provider.id, model.id)
+              // A model already in *another* list is still worth adding here — the
+              // same route in two lists is a legitimate fallback — but it should
+              // say so, or the picker looks like it has no idea what is already in
+              // use.
+              const elsewhere = !used && isUsedElsewhere?.(group.provider.id, model.id) === true
+              return h('button', {
+                key: model.id,
+                type: 'button',
+                className: 'mr_routechip' + (used ? ' used' : elsewhere ? ' elsewhere' : ''),
+                disabled: used,
+                title: used ? t('picker.added') : elsewhere ? t('picker.elsewhere') : t('picker.add'),
+                onClick: () => onAdd(group.provider.id, model.id),
+              },
+              used ? h('span', { className: 'mr_star' }, '✓') : elsewhere ? h('span', { className: 'mr_elsewhere' }) : null,
+              h('span', { className: 'mr_mono' }, model.id),
+              used ? null : h('span', { className: 'mr_chipadd' }, '＋'))
+            }))
+            : null)))
     }
 
     // ── the ordered list ──────────────────────────────────────────────────────

@@ -311,9 +311,10 @@ test('the page renders its whole tree once state has arrived', () => {
   })
 
   // The page's own useState slots, in order: state, draft, baseline, error,
-  // fieldErrors, busy, report, catalog, target — then the picker's filter.
-  // Seeding them drives the page past its loading branch without a reconciler.
-  hookQueue = [state, draftConfig, draftConfig, '', [], false, '', catalog, 'main', '']
+  // fieldErrors, busy, report, catalog, target — then the picker's filter and
+  // its collapsed-provider set. Seeding them drives the page past its loading
+  // branch without a reconciler.
+  hookQueue = [state, draftConfig, draftConfig, '', [], false, '', catalog, 'main', '', new Set()]
   let tree
   try {
     tree = page({ t: key => key, close: () => {} })
@@ -361,6 +362,21 @@ test('the page renders its whole tree once state has arrived', () => {
     chips.some(chip => JSON.stringify(chip).includes('space-bunny-free')),
     'the observed route is offered even though its provider advertises no models',
   )
+
+  // Providers collapse: each group header is a real toggle button carrying its
+  // model count, and honours aria-expanded, so the inventory reads as two
+  // levels — which providers, then which models — instead of one flat wall.
+  const toggles = []
+  const walkToggles = node => {
+    if (node === null || typeof node !== 'object') return
+    if (Array.isArray(node)) { node.forEach(walkToggles); return }
+    if (typeof node.props?.className === 'string' && node.props.className.includes('mr_grouptoggle')) toggles.push(node)
+    walkToggles(node.props?.children)
+  }
+  walkToggles(tree)
+  assert.ok(toggles.length > 0, 'each provider group has a collapse toggle')
+  assert.ok(toggles.every(toggle => toggle.props.onClick !== undefined), 'the toggle can be clicked')
+  assert.ok(toggles.every(toggle => toggle.props['aria-expanded'] === 'true'), 'groups start expanded')
 
   // A model already in the *target* list is struck out and cannot be re-added.
   const inTarget = chips.filter(chip => String(chip.props.className).includes(' used'))

@@ -1,239 +1,134 @@
 # dsh-model-auto-router
 
-> English | [中文](README.zh.md)
+> [English](README.en.md) | 中文
 
-Autonomous **model pool routing** and **automatic failover** for DeepSeek Harness.
+面向 DeepSeek Harness 的**模型池路由**与**自动故障转移**插件。
 
-- The **main agent** and every **subagent** draw their model from a pool you configure,
-  instead of being pinned to one fixed model.
-- When the current model **becomes unavailable** (rate limit, overload, timeout,
-  5xx, DNS failure, model withdrawn), the plugin switches to a healthy fallback
-  **on the very next attempt** — the turn keeps going, the user sees no error.
-- A **settings page** (Settings → Model Router) edits the pools, the role
-  assignment and the failover policy, and shows what the running router is
-  actually doing. It writes the same config file a hand edit would.
+- **主 Agent** 与每个**子 Agent** 从你配置的池中取模型,而不是固定绑定某一个模型。
+- 当当前模型**不可用**(限流、过载、超时、5xx、DNS 故障、模型下线)时,插件在**下一次尝试**就切换到健康的备用路由——回合继续,用户看不到报错。
+- 一个**设置页**(设置 → 模型自主路由)编辑模型池、角色分配与故障转移策略,并显示正在运行的 router 实际在做什么。它写入的正是手改编辑的同一份配置文件。
 
 ---
 
-## How it works
+## 工作原理
 
-The plugin installs two of DSH's agent waterfalls. Both fire for the main agent and
-for every subagent, because both run through the same agent loop:
+插件安装 DSH 的两个 agent 瀑布。它们对主 Agent 和每个子 Agent 都生效,因为两者走的是同一个 agent 循环:
 
-| Waterfall | Job |
+| 瀑布 | 职责 |
 | --- | --- |
-| `agent/request` | Replace the frozen `LlmCallConfig` for the coming step. This is where a pool picks a route. |
-| `agent/request-error` | A request failed. Demote the route when the failure means "unavailable" and return `{ kind: 'retry' }`, which re-enters `agent/request` and lands on the next candidate. |
+| `agent/request` | 替换下一步的冻结 `LlmCallConfig`。模型池在这里选路由。 |
+| `agent/request-error` | 请求失败。当失败意味着「不可用」时降级该路由并返回 `{ kind: 'retry' }`,重新进入 `agent/request` 落到下一个候选。 |
 
-Because selection happens per request rather than per session, a failover takes
-effect immediately — no restart, no new session.
+因为选择发生在**每次请求**而非每个会话,故障转移立即生效——不需要重启,也不需要新会话。
 
-### Failover, precisely
+### 故障转移的精确语义
 
-1. A request fails. The plugin classifies the failure.
-2. **Unavailable** (429, 5xx, 502/503/504/529, `model_overloaded`, `ECONNREFUSED`,
-   `ENOTFOUND`, a server-side code like `SERVER`, a status quoted in the message, a
-   model the provider says it has retired, …) → the route's failure counter grows.
-   Once it reaches `failureThreshold` the route is **demoted** for `cooldownMs`.
-3. If a healthy alternative exists, the plugin returns `{ kind: 'retry' }`, which
-   re-enters `agent/request`. Below the threshold the route is still healthy, so
-   that retry lands back on it — one free retry, which is what the threshold is
-   for. At the threshold the route is skipped and the retry moves on.
-4. **Not unavailable** (400, 401/403, `context_length_exceeded`, …) → nothing
-   changes. Switching models would only swap one wrong answer for another, so the
-   built-in retry policy and the normal error path handle it.
-5. If **every** route is demoted and no fallback exists, the plugin does not claim
-   the retry — the real error is surfaced instead of being masked.
+1. 请求失败,插件对失败分类。
+2. **不可用**(429、5xx、502/503/504/529、`model_overloaded`、`ECONNREFUSED`、`ENOTFOUND`、像 `SERVER` 这样的服务端码、**消息里引用的状态码**、provider 声称已下线的模型等)→ 该路由的失败计数增加。达到 `failureThreshold` 后该路由被**降级** `cooldownMs`。
+3. 若存在健康的替代路由,插件返回 `{ kind: 'retry' }`,重新进入 `agent/request`。未达阈值时该路由仍算健康,所以这次重试会**落回同一条路由**——一次免费重试,这正是阈值存在的意义。达到阈值后该路由被跳过,重试才会换路。
+4. **不可用以外的失败**(400、401/403、`context_length_exceeded` 等)→ 不做任何变化。换模型只会把一个错误答案换成另一个,由内建重试策略和正常错误路径处理。
+5. 若**所有**路由都已降级且无备用,插件不会认领重试——真实错误会被呈现,而不是被掩盖。
 
-Three notes on that classification:
+关于这个分类的三点说明:
 
-- **A failure can carry its meaning in the message.** `LlmFailure` has a required
-  `code` but an optional `status`, and an in-stream error envelope is classified
-  with no status to pass at all — so what arrives is
-  `{ code: 'SERVER', message: 'Streaming response failed: [503] Upstream error from
-  Nvidia: Service temporarily overloaded' }`. The 503 is nowhere but the text. A
-  classifier reading `status` alone sees an unknown failure and leaves a plainly
-  overloaded upstream in place, which is how a turn ends for no good reason. So the
-  plugin reads a status quoted as `[503]`, `HTTP 503` or `status 503` from the
-  message, and treats wording like *temporarily overloaded* / *service unavailable*
-  / *try again later* as unavailable too.
-- **A server-side code is unavailable.** `dsh-our-free-model` splits its vocabulary
-  in two and says so in its own source — `CLIENT_ERROR` for a 4xx, and `SERVER` for
-  the retryable bucket, explicitly not the fallback for a request fault. The rest
-  of its `CODE` table (`TRANSPORT` for a failed fetch, `RATE_LIMIT`, `TIMEOUT`,
-  `EMPTY_RESPONSE`) names the same side of the wire and is read the same way. A
-  bare `SERVER` with no other detail is therefore an availability signal.
-- **A retiring model is treated as unavailable, not as gone.** Providers phrase a
-  retirement in prose rather than in a failure code — `dsh-our-free-model`
-  surfaces `Model X has been deprecated. Use Y instead.` as a generic client
-  error — so the message is the only signal, and this plugin reads it. But
-  "deprecated" is the provider's word for its own catalogue, and the same route
-  can be serving again later (a staged rollout, an overstated notice, an upstream
-  rotation). So a retirement decides only *whether* a failover may happen, never
-  how many failures it takes: `failureThreshold` stays the single lever, and
-  `1` is how to make a retirement move on the first error.
+- **失败的含义可能只在消息里。** `LlmFailure` 的 `code` 是必填、`status` 是可选,而流内错误封装在分类时**根本没有 status 可传**——所以到达插件的是 `{ code: 'SERVER', message: 'Streaming response failed: [503] Upstream error from Nvidia: Service temporarily overloaded' }`,那个 503 **只在文本里**。只读 `status` 的分类器会看到一个未知失败,于是把一条明显过载的上游留在原地——一轮对话就这样无谓地结束了。因此插件会从消息里读出 `[503]`、`HTTP 503`、`status 503` 这类引用的状态码,并把 *temporarily overloaded* / *service unavailable* / *try again later* 这类措辞也当作不可用。
+- **服务端码就是不可用。** `dsh-our-free-model` 在自己的源码里把词表一分为二:`CLIENT_ERROR` 对应 4xx,`SERVER` 则是可重试的那一桶,并明确说它不该是请求错误的兜底。它 `CODE` 表里的其余项(`TRANSPORT` 表示 fetch 失败、`RATE_LIMIT`、`TIMEOUT`、`EMPTY_RESPONSE`)指的是同一侧的故障,同样照此读取。所以一个不带其他细节的裸 `SERVER` 就是可用性信号。
+- **模型下线被当作「不可用」,而不是「永久消失」。** provider 通常用自然语言而非错误码表达下线——`dsh-our-free-model` 会把 `Model X has been deprecated. Use Y instead.` 当作通用的客户端错误抛出——所以消息是唯一信号,本插件读取它。但「deprecated」是 provider 对自己目录的说法,同一条路由之后可能又能用(灰度发布、措辞夸大、上游轮换)。因此「下线」只决定**能否**发生故障转移,绝不决定需要失败几次:`failureThreshold` 始终是唯一的杠杆,把它设为 `1` 就能让下线在第一次错误时立刻切换。
 
-A quoted **4xx** stays a request fault — `[400] bad request` does not trigger a
-failover just because the adapter labelled the envelope `SERVER` — and a named
-request fault (`invalid_request`) outranks a quoted 5xx. Only one of the two
-directions is recoverable, so the asymmetry is deliberate.
+消息里引用的 **4xx 仍然是请求错误**——`[400] bad request` 不会因为适配器把封装标成 `SERVER` 就触发切换——而一个有明确名字的请求错误(`invalid_request`)优先于消息里引用的 5xx。两个方向里只有一个是可恢复的,所以这个不对称是刻意的。
 
-Compaction and session-title calls are **never** rerouted. That is structural
-rather than a filter: those calls stream straight through `ctx.llm` — the title
-plugin's own envelope deliberately omits the agent loop's request identity — so
-they never reach an `agent/request` listener at all.
+压缩(compact)和会话标题的调用**从不**改路由。这是**结构性**的,不是一个过滤器:这些调用直接通过 `ctx.llm` 流式生成——标题插件自己的封装有意不带 agent loop 的请求身份——所以它们压根不会到达 `agent/request` 监听器。
 
-### Route stability
+### 路由稳定性
 
-An agent stays on its chosen route for its lifetime unless that route is demoted.
-This is deliberate: provider prompt caches are keyed by model, so reshuffling on
-every step would pay full input cost on every call. The `round-robin` and
-`least-used` strategies therefore distribute **across agents**, not within one.
+一个 agent 除非其路由被降级,否则在其生命周期内固定在选定的路由上。这是刻意的:provider 的提示词缓存按模型索引,每步都重排会在每次调用上支付全额输入成本。因此 `round-robin` 与 `least-used` 策略是在 **agent 之间**分摊,而不是在单个 agent 内部。
 
-### Reasoning effort belongs to the model
+### 思考强度属于模型,不属于请求
 
-A pool changes which model a request uses, and `reasoningEffort` is a property of
-the model, not the request. DSH resolves the effort and **validates the pair
-before dispatching**:
+模型池会改变一个请求用哪个模型,而 `reasoningEffort` 是**模型**的属性,不是请求的。DSH 会解析它,并在**派发前校验这个组合**:
 
 ```
 provider "our-free-model-vision" model "mimo-v2.5-free" does not support reasoning effort "high"
 ```
 
-So carrying DSH's effort across a model change turns a recoverable failover into a
-hard failure — a failover that dies on the way out. The plugin therefore
-reconciles it: it reads the chosen model's own capabilities through
-`llm.resolveModelInfo` (the same call DSH makes) and
+所以把 DSH 的 effort 原样带过一次模型切换,会把一次可恢复的故障转移变成硬失败——一次死在出口的转移。因此插件会做协调:通过 `llm.resolveModelInfo`(DSH 自己用的同一个调用)读取所选模型的能力,然后
 
-- **keeps the effort** when that model accepts it, so an explicit setting is
-  honoured; and
-- **drops it** when it does not — or when the capability cannot be read at all —
-  so DSH falls back to that model's own default. An absent effort is always
-  valid, which makes dropping the safe direction.
+- **模型接受时保留** effort,让显式设置得到尊重;
+- **不接受时丢弃**它——读不到能力时也一样——让 DSH 回落到该模型自己的默认值。effort 缺省永远是合法的,所以「丢弃」是安全的方向。
 
-Capabilities are cached per route for five minutes, since this runs in the
-request path and a model's reasoning support does not change between two requests
-a second apart. `llm.resolveModelInfo` is the public service method; if a
-composition lacks it, the effort is dropped rather than guessed at.
+能力按路由缓存五分钟:这段代码在请求路径上,而模型的思考支持不会在一秒之间变化。`llm.resolveModelInfo` 是公开的服务方法;若某个组合没有它,插件会丢弃 effort 而不是去猜。
 
 ---
 
-## Install
+## 安装
 
-The plugin registers itself through the profile bundle list:
+插件通过 profile 的 bundle 列表注册自身:
 
 ```
 dsh install git+https://github.com/ocyisheng/dsh-model-auto-router.git
 ```
 
-To work on it locally instead, clone the repository and point `dsh install` at
-the checkout — the profile records it as a `link:` dependency, so edits take
-effect after a reload rather than a reinstall:
+若要在本地开发,改为克隆仓库并把 `dsh install` 指向检出目录——profile 会将其记录为 `link:` 依赖,因此改动只需重新加载即生效,不必重装:
 
 ```
 git clone https://github.com/ocyisheng/dsh-model-auto-router.git
 dsh install .\dsh-model-auto-router
 ```
 
-> Restart DSH after the first install. The host caches the plugin module in its
-> ESM registry, so a later file edit needs a restart (or a plugin toggle) to take
-> effect.
+> 首次安装后请重启 DSH。宿主把插件模块缓存在其 ESM 注册表中,因此后续的文件编辑需要重启(或切换插件开关)才能生效。
 
-## Configure
+## 配置
 
-There are two ways to edit the same file, and they are interchangeable:
+有两种编辑同一份文件的方式,且可互换:
 
-- the **settings page** — Settings → **Model Router** in the Web GUI; or
-- the **config file** itself, at `~/.dsh/model-auto-router.json`.
+- **设置页** —— Web 界面里的 设置 → **模型自主路由**;或
+- **配置文件本身**,位于 `~/.dsh/model-auto-router.json`。
 
-The file is polled and reloaded automatically, so a hand edit takes effect
-without restarting. A save from the page applies immediately *and* writes the
-file, so the two never drift apart.
+文件会被轮询并自动重载,因此手改无需重启即可生效。从页面保存会立即生效**并**写入文件,两者不会各说各话。
 
-### Settings page
+### 设置页
 
-One page, read top to bottom:
+一页,从上往下读:
 
-| Section | What it does |
+| 区块 | 作用 |
 | --- | --- |
-| Models | Every provider and model route this host can dispatch, grouped by provider. One click adds it to the list chosen by the **Add to** buttons; a filter narrows it. The picker offers only what the system provides. |
-| Main agent | The ordered list the main agent walks, top to bottom, on failure. Its strategy select decides how *new* agents are spread. |
-| Subagents | The list subagents draw from. **Left empty, it is not a setting — subagents follow the main agent**, because that is what the router does when a subagent has no pool of its own. Fill it only when subagents should use different models. |
-| Backup | Optional. Used only when every model above is unavailable. |
-| Failover | How many consecutive failures demote a route, and how long it then cools down. |
+| 模型 | 本机能派发的 provider 与模型,按 provider 分组。点一下加入「加入」按钮选定的列表;筛选框可缩小范围。清单只展示系统提供的内容。 |
+| 主 Agent | 主 Agent 故障时从上到下依次尝试的有序列表。其策略下拉决定**新** agent 如何分摊。 |
+| 子 Agent | 子 Agent 取模型的列表。**留空时它不是一个设置——子 Agent 跟随主 Agent**,因为这正是子 Agent 没有专属池时 router 的行为。只有子 Agent 需要用别的模型时才填。 |
+| 备用 | 可选。仅当上面的模型全部不可用时使用。 |
+| 失败切换 | 连续失败多少次后降级一条路由,以及降级后冷却多久。 |
 
-There is deliberately no "follow the main agent" switch. An empty subagent list
-already means exactly that: `writeRoleList` writes no `subagentPool` for an
-empty list, and the router falls back to the main pool. The list exists for the
-one case that is *not* the default — subagents on their own models — and its
-absence is the default, not an unset preference.
+这里刻意没有「跟随主 Agent」开关。子 Agent 列表为空时就已经表达了那件事:`writeRoleList` 不会为空列表写入 `subagentPool`,router 于是回落到主池。这个列表是为**不是**默认的那种情况准备的——子 Agent 用自己的模型——而它的「没有」就是默认,不是一个待设置的偏好。
 
-**A pool is an ordered failover chain, so the page shows exactly that.** The
-config's unit is a named pool that a role points at — right for the file, wrong
-for a person, who is thinking "which models should the agent use, in what order".
-So the three lists *are* the pools: each edits the pool its role already names,
-and creates one only when a list is first filled in. Strategy stays one control
-per list, because `round-robin` and friends distribute *across agents* in a way
-an ordered list cannot show; everything else a pool can express lives in the file.
+**一个池就是一条有序的故障转移链,所以页面呈现的正是这件事。** 配置的单位是角色指向的具名池——这对文件是对的,对人是错的,因为人在想「agent 该按什么顺序用哪些模型」。所以三个列表**就是**池:每个编辑其角色已指向的那个池,只在列表第一次被填时才创建。策略保留为每个列表一个控件,因为 `round-robin` 等是在 **agent 之间**分摊,有序列表展示不了这件事;池能表达的其余内容都在文件里。
 
-Clearing a list empties the pool but does not delete it, since you may still be
-pointing at it from the file, or about to fill it again. The **Diagnostics**
-disclosure at the bottom carries the config path and a status-report toggle —
-the same text `/model-auto-router status` prints — without competing with the flow.
+清空列表会清空池但**不删除**池,因为你可能还在文件里指向它,或正准备重新填。底部的**诊断**折叠区承载配置路径和状态报告开关——与 `/model-auto-router status` 打印的文本相同——而不与主流程争夺注意力。
 
-The inventory draws on three sources, in descending order of authority:
+模型清单来自三个来源,按可信度降序:
 
-1. **Observed** — `provider/model` pairs this plugin watched the host actually
-   dispatch, recorded by the routing lane itself. Real by construction: a request
-   went out on that exact pair.
-2. **The agent's default selection** — the route the host is configured to use,
-   available before any request has been made.
-3. **The `llm` catalog** — every registered provider and the models its adapter
-   advertises. The broadest list, and the only one that can show a model this
-   machine has not used yet.
+1. **实际派发过** —— 本插件观察到宿主真正派发的 `provider/model` 对,由路由通道本身记录。构造上即为真实:有一次请求以该精确配对发出。
+2. **Agent 的默认选择** —— 宿主配置使用的路由,在任何请求发生前即可用。
+3. **`llm` 目录** —— 每个已注册 provider 及其适配器自报的模型。最全,也是唯一能展示本机尚未用过的模型的来源。
 
-That ordering is the point. An adapter's self-description is the *weakest*
-evidence available — some keep their roster in their own store and advertise
-nothing through `listModels` — so the page never depends on it alone. On a host
-where every adapter declines to describe itself, the first two sources still fill
-the page with routes that provably work.
+这个顺序正是重点。适配器的自述是**最弱**的证据——有些把模型清单放在自己的仓库里、通过 `listModels` 什么也不报——所以页面绝不单独依赖它。在所有适配器都拒绝自我介绍的宿主上,前两个来源仍能把页面填满可证明可用的路由。
 
-Three things about the inventory are deliberate:
+关于清单,有三点是刻意的:
 
-- **It shows what the system provides, and adds nothing of its own.** The
-  picker offers only routes this host can actually dispatch — registered
-  providers, routes it was observed dispatching, and the default selection.
-  There is no free-text entry: a model the catalog does not list belongs in the
-  config file, where the full `provider/model` pair can be written directly.
-- **Dormant routes are offered and labelled.** A provider an adapter plugin owns
-  but has not activated is listed as *not activated*, since naming it is how it
-  becomes usable.
-- **Unreadable inventory degrades honestly.** If the `llm` registry cannot be
-  read, the page says so and lists only the observed routes, rather than implying
-  the shorter list is the whole inventory.
+- **它只展示系统提供的内容,不自己加东西。** 清单只列出本机真正能派发的路由——已注册的 provider、观察到其派发过的路由,以及默认选择。没有自由文本入口:目录里没有的模型属于配置文件,那里可以直接写出完整的 `provider/model` 配对。
+- **休眠路由会被列出并标注。** 某个适配器插件拥有但尚未激活的 provider 会标为 *未启用*,因为命名它正是它变得可用的方式。
+- **读不到的清单会诚实降级。** 若 `llm` 注册表读不到,页面会说明并只列出实际派发过的路由,而不是暗示更短的清单就是全部。
 
-Two more behaviours worth knowing:
+还有两点值得了解:
 
-- **A role is only defaulted to a pool that exists.** A file whose only pool is
-  `main` loads with the fallback role unset rather than pointing at a `backup`
-  pool that was never declared — otherwise the page would open onto a config it
-  then refused to save.
-- **`$comment` keys are preserved.** A save carries them over from the file,
-  including nested ones such as `health.$comment_threshold`, so the sample's
-  self-documentation survives being edited in the browser. Saving *does* replace
-  the roster wholesale: a pool you delete in the page takes its comment with it.
-- **Keys the page does not manage are dropped**, and the page lists the
-  top-level ones it found before you save. Comment keys are the exception above;
-  a non-comment key cannot be carried over, because a value you just deleted in
-  the page would then reappear on the next save.
+- **角色只会默认指向存在的池。** 一个只有 `main` 池的文件加载时备用角色保持未设置,而不是指向一个从未声明的 `backup` 池——否则页面会打开一个它随后拒绝保存的配置。
+- **`$comment` 键会被保留。** 保存会从文件中携带它们,包括 `health.$comment_threshold` 这类嵌套的,因此样例的自述文档在浏览器里编辑后仍能存活。保存**确实**整体替换名单:你在页面里删除的池会连同其注释一起消失。
+- **页面不管理的键会被丢弃**,且页面会在你保存前列出它发现的顶层键。注释键是上面的例外;非注释键无法携带,因为你在页面里刚删掉的值会在下次保存时重新出现。
 
-The page is available wherever a web server is mounted. Set `ui: false` in the
-entry config to run routing with no page at all.
+只要挂载了 web 服务器,页面就可用。在入口配置里设 `ui: false` 即可完全不带页面地运行路由。
 
-### The config file
+### 配置文件
 
-Copy `model-auto-router.config.json` to `~/.dsh/model-auto-router.json`, or pass the config
-inline through the profile entry.
+把 `model-auto-router.config.json` 复制到 `~/.dsh/model-auto-router.json`,或通过 profile 入口内联传入配置。
 
 ```jsonc
 {
@@ -262,152 +157,119 @@ inline through the profile entry.
 }
 ```
 
-### Candidate forms
+### 候选写法
 
 ```jsonc
 "candidates": [
-  "deepseek-chat",                                  // uses the pool's provider
-  { "model": "deepseek-reasoner" },                 // ditto
-  { "provider": "openai", "model": "gpt-5" },       // explicit route
+  "deepseek-chat",                                  // 使用池的 provider
+  { "model": "deepseek-reasoner" },                 // 同上
+  { "provider": "openai", "model": "gpt-5" },       // 显式路由
   { "provider": "openai", "model": "gpt-5", "weight": 3 }
 ]
 ```
 
-### Strategies
+### 策略
 
-| Strategy | Behaviour |
+| 策略 | 行为 |
 | --- | --- |
-| `primary-failover` | Pool order is the priority; an agent gets a stable route. **Default.** |
-| `round-robin` | New agents cycle through the pool in order. |
-| `least-used` | New agents go to the least-used route. |
-| `random` | Uniform random per new agent. |
-| `weighted-random` | Random, biased by each candidate's `weight`. |
+| `primary-failover` | 池内顺序即优先级;agent 获得稳定路由。**默认。** |
+| `round-robin` | 新 agent 按顺序轮流分配。 |
+| `least-used` | 新 agent 分给使用最少的路由。 |
+| `random` | 每个新 agent 等概率随机。 |
+| `weighted-random` | 随机,按各候选的 `weight` 偏置。 |
 
-### Health settings
+### 健康设置
 
-| Key | Default | Meaning |
+| 键 | 默认 | 含义 |
 | --- | --- | --- |
-| `failureThreshold` | `2` | Consecutive unavailable failures before a route is demoted. Use `1` to switch on the first error. |
-| `cooldownMs` | `60000` | How long a demoted route is skipped before it is retried. |
+| `failureThreshold` | `2` | 一条路由被降级前的连续不可用失败次数。填 `1` 表示第一次错误就切换。 |
+| `cooldownMs` | `60000` | 降级的路由被跳过多久后重试。 |
 
 ---
 
-## Inspect and steer at runtime
+## 运行时查看与干预
 
 ```
-/model-auto-router status              # pools, per-agent assignments, cooling routes, recent switches
-/model-auto-router pools               # just the configured pools
-/model-auto-router use gpt-5           # pin this session to one route (bare model name works)
-/model-auto-router auto                # release the pin, resume pool selection
+/model-auto-router status              # 池、各 agent 的指派、冷却中的路由、最近的切换
+/model-auto-router pools               # 仅已配置的池
+/model-auto-router use gpt-5           # 把本会话固定到一条路由(裸模型名也可)
+/model-auto-router auto                # 释放固定,恢复池选择
 ```
 
 ---
 
-## Entry Config
+## 入口配置
 
-| Field | Default | Meaning |
+| 字段 | 默认 | 含义 |
 | --- | --- | --- |
-| `configPath` | `~/.dsh/model-auto-router.json` | Path to the JSON config. |
-| `watch` | `true` | Poll the config file and reload pools on change. |
-| `router` | — | Inline config, merged **under** the file's contents. |
-| `enabled` | `true` | `false` leaves DSH's own model selection completely untouched. |
-| `ui` | `true` | Mount the settings page (where a web server is mounted). `false` runs headless. |
-| `selfTest` | `false` | Run the behavioural suite in-process at boot. |
-| `selfTestOut` | — | Write the self-test report (JSON) to this path. |
+| `configPath` | `~/.dsh/model-auto-router.json` | JSON 配置的路径。 |
+| `watch` | `true` | 轮询配置文件,变更时重载池。 |
+| `router` | — | 内联配置,合并到文件内容**之下**。 |
+| `enabled` | `true` | `false` 则完全不动 DSH 自己的模型选择。 |
+| `ui` | `true` | 挂载设置页(在挂载了 web 服务器的组合上)。`false` 则无页面运行。 |
+| `selfTest` | `false` | 启动时在进程内运行行为测试套件。 |
+| `selfTestOut` | — | 把自测报告(JSON)写入该路径。 |
 
 ---
 
-## The settings page's HTTP surface
+## 设置页的 HTTP 接口
 
-The browser half is a thin renderer over three routes the Host half mounts at
-`/api/model-auto-router`:
+浏览器半边是对宿主半边挂载在 `/api/model-auto-router` 的三个路由的薄渲染层:
 
-| Route | Job |
+| 路由 | 职责 |
 | --- | --- |
-| `GET /state` | The config as an editable draft, plus the router's live state. |
-| `GET /catalog` | The provider/model routes this host can dispatch, plus the routes it has been observed dispatching. |
-| `PUT /config` | Validate a draft, write the file atomically, and reload the pools. |
-| `GET /report` | The same text `/model-auto-router status` prints. |
+| `GET /state` | 配置作为可编辑草稿,加上 router 的实时状态。 |
+| `GET /catalog` | 本机能派发的 provider/model 路由,加上观察到其派发过的路由。 |
+| `PUT /config` | 校验草稿,原子写入文件,并重载池。 |
+| `GET /report` | 与 `/model-auto-router status` 打印的文本相同。 |
 
-`/catalog` is separate from `/state` on purpose: state is polled every few
-seconds, while the inventory means asking every adapter — third-party I/O that
-does not belong on a timer. The host caches it for a minute, bounds each
-provider's discovery with a timeout, and treats a provider that fails or hangs as
-a note on that provider rather than as an empty answer.
+`/catalog` 刻意与 `/state` 分开:state 每几秒轮询一次,而取清单意味着询问每个适配器——第三方 I/O 不该挂在定时器上。宿主缓存它一分钟,为每个 provider 的探测设了超时上限,并把失败或卡住的 provider 当作它自己的一行说明,而不是当作空答案。
 
-This prefix is longer than the kernel's own `/api`, and webServer dispatch is
-longest-prefix-wins — so these routes run *before* the app's own admission check
-and need their own fence. Every request is therefore admitted by the
-composition's `connection` service when one is mounted, and otherwise by a
-structural replica of that check: loopback host only, no cross-site fetches, and
-an `Origin`/`Referer` that matches the `Host` authority. One of these routes
-writes the config, so the fence is not decorative.
+这个前缀比内核自己的 `/api` 更长,而 webServer 派发是**最长前缀优先**——所以这些路由在应用自身的准入检查**之前**执行,需要自己的围栏。因此每个请求都由组合挂载的 `connection` 服务准入(若有),否则由该检查的一个结构化副本准入:仅回环地址主机、拒绝跨站 fetch、且 `Origin`/`Referer` 与 `Host` 权威匹配。其中一条路由会写配置,所以这道围栏不是摆设。
 
-A draft is validated before it reaches the disk, and a save that the router's
-own normalization still rejects disables routing rather than aborting the host —
-the same degradation a malformed hand-edited file already gets.
+草稿在落盘前会先校验,且若 router 自身的规范化仍拒绝某次保存,路由会被禁用而不是中断宿主——与手改出的坏文件得到的降级相同。
 
 ---
 
-## Tests
+## 测试
 
 ```bash
-node --test                      # or: node --test test/
+node --test                      # 或: node --test test/
 ```
 
-| File | Covers |
+| 文件 | 覆盖 |
 | --- | --- |
-| `test/router.test.js` | The behavioural suite in `src/selftest.js` — selection, failover, health, pinning, the structured snapshot. |
-| `test/host.test.js` | `index.js` against a stand-in host: the two waterfalls, the command, the settings API mount, and the `ui: false` path. |
-| `test/config-io.test.js` | The config layer: projection, validation, comment retention, round trips. |
-| `test/catalog.test.js` | The provider/model inventory: caching, adapter coercion, a hanging provider, a failing one, the runtime route observer, and the source hierarchy. |
-| `test/api.test.js` | The HTTP surface: state, catalog, save, refusal, and the trust fence. |
-| `test/effort.test.js` | Reasoning-effort reconciliation: keep what the model accepts, drop what it does not, caching, timeouts, and the shapes that must never be mistaken for support. |
-| `test/client.test.js` | The browser bundle: registration, dictionaries, a full render smoke test, and the theme-token invariant. |
+| `test/router.test.js` | `src/selftest.js` 中的行为套件——选择、故障转移、健康、固定、结构化快照。 |
+| `test/host.test.js` | `index.js` 对着一个替代宿主:两个瀑布、命令、设置 API 挂载,以及 `ui: false` 路径。 |
+| `test/config-io.test.js` | 配置层:投影、校验、注释保留、往返。 |
+| `test/catalog.test.js` | provider/model 清单:缓存、适配器强制整形、卡住的 provider、失败的 provider、运行时路由观察器,以及来源层级。 |
+| `test/api.test.js` | HTTP 接口:state、catalog、保存、拒绝,以及信任围栏。 |
+| `test/effort.test.js` | 思考强度协调:模型接受的保留、不接受的丢弃、缓存、超时,以及绝不能被误读为「支持」的几种形态。 |
+| `test/client.test.js` | 浏览器 bundle:注册、字典、整棵组件树的渲染冒烟测试,以及主题 token 不变量。 |
 
-`test/client.test.js` is worth calling out: it executes `client.js` against a
-stub `window.__ModuleLoader__` and renders the page with a small hook shim, so a
-broken bundle fails here rather than as a blank settings page in a browser.
+`test/client.test.js` 值得一提:它对着一个 stub 的 `window.__ModuleLoader__` 执行 `client.js`,并用一个小型 hook shim 渲染页面,因此一个坏掉的 bundle 会在这里失败,而不是变成浏览器里一个空白的设置页。
 
-The same behavioural suite runs inside the host without a test runner:
+同一套行为测试也能在宿主内、无需测试运行器地执行:
 
 ```bash
 dsh install F:\AI\dsh-model-auto-router
-# entry config: { selfTest: true, selfTestOut: './selftest-report.json' }
-# or: DSH_MODEL_AUTO_ROUTER_SELFTEST=1
+# 入口配置: { selfTest: true, selfTestOut: './selftest-report.json' }
+# 或: DSH_MODEL_AUTO_ROUTER_SELFTEST=1
 ```
 
-`test/browser-harness.html` runs the same assertions in a browser for environments
-without Node.
+`test/browser-harness.html` 在浏览器里跑同一套断言,适用于没有 Node 的环境。
 
 ---
 
-## Design notes
+## 设计说明
 
-- **No build step.** The plugin ships plain ESM JavaScript and a hand-written
-  ModuleLoader bundle, so the exact files that run are the exact files under
-  review.
-- **One writer for the config.** The page edits the file through the plugin's own
-  routes and the router reloads from that file — it never mutates router
-  internals. The file and the live routing cannot silently diverge.
-- **Pure core.** `src/pool.js`, `src/health.js`, `src/config-io.js` and
-  `src/router.js` have no host imports, no clock and no I/O, which is what makes
-  the behaviour deterministic and directly testable. `src/config-io.js` takes its
-  file access as injected callbacks, so the whole config path is testable in
-  memory.
-- **Fails quiet.** A malformed config, an unknown pool name or a missing file is
-  logged once and leaves DSH's own routing in place — it never aborts a boot.
-- **Never claims a retry it cannot honour.** If there is nowhere healthy to go,
-  the original error reaches the user.
-- **Host styling vocabulary, not a look of its own.** Panels use the settings-card
-  tokens, the one primary action uses the button-primary tokens, corners come
-  from the radius scale, and every colour is a token the host actually defines —
-  verified against the shipped CSS rather than against the Theme provider's
-  `listTokens`, which advertises only a subset. The suite fails if a used token
-  has no definition in the host, and it names the two tokens the shipped plugins
-  reference that the host never defines (`label-on-accent`,
-  `state-warning-primary`), which this page deliberately avoids.
+- **无构建步骤。** 插件以纯 ESM JavaScript 和手写的 ModuleLoader bundle 发布,因此实际运行的文件就是被审查的文件。
+- **配置只有一个写入者。** 页面通过插件自己的路由编辑文件,router 从该文件重载——它从不直接改动 router 内部。文件与实时路由不可能悄然分叉。
+- **纯净核心。** `src/pool.js`、`src/health.js`、`src/config-io.js` 与 `src/router.js` 没有宿主导入、没有时钟、没有 I/O,这正是行为确定且可直接测试的原因。`src/config-io.js` 把文件访问作为注入的回调,因此整条配置路径都可在内存中测试。
+- **安静地失败。** 一个坏配置、未知的池名或缺失的文件只会被记录一次,并让 DSH 自己的路由保持原位——它从不中断一次启动。
+- **从不认领兑现不了的重试。** 若无处可去,真实错误会到达用户。
+- **宿主的样式词汇表,而非自创的观感。** 面板使用 settings-card token,唯一的主操作使用 button-primary token,圆角来自 radius 刻度,且每种颜色都是宿主真正定义的 token——对着随附的 CSS 验证过,而不是对着 Theme provider 的 `listTokens`(它只列出一个子集)。若某个被用到的 token 在宿主中没有定义,测试会失败;测试还会点名已安装插件引用而宿主从未定义的两个 token(`label-on-accent`、`state-warning-primary`),本页面刻意避免使用它们。
 
-## License
+## 许可
 
 MIT

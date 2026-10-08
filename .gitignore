@@ -19,3 +19,6 @@ Thumbs.db
 # Logs
 *.log
 npm-debug.log*
+
+# Local-only session analysis artifacts (never publish).
+.artifacts/

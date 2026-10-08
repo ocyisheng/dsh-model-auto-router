@@ -20,7 +20,7 @@ import { splitRouteInput } from './route-input.js'
 export function registerModelAutoRouterCommand(router, commands) {
   return commands.register({
     name: 'model-auto-router',
-    description: 'Show or steer model pool routing and failover state.',
+    description: '查看或调整模型池路由与故障转移状态。',
     input: { hint: '[status | pools | use <provider/model> | auto]' },
     handler: async invocation => {
       const raw = (invocation.rawInput ?? '').trim()

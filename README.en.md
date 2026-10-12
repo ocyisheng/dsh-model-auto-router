@@ -198,13 +198,22 @@ nothing through `listModels` — so the page never depends on it alone. On a hos
 where every adapter declines to describe itself, the first two sources still fill
 the page with routes that provably work.
 
-Three things about the inventory are deliberate:
+Four things about the inventory are deliberate:
 
 - **It shows what the system provides, and adds nothing of its own.** The
   picker offers only routes this host can actually dispatch — registered
   providers, routes it was observed dispatching, and the default selection.
   There is no free-text entry: a model the catalog does not list belongs in the
   config file, where the full `provider/model` pair can be written directly.
+- **Auto-vision mirrors and region-gated routes are filtered out.** A wrapper
+  route another plugin registers just so image input is admitted
+  (`<provider>-vision`, `deepseek-vision`, `vision-chain`, labelled
+  "+ 自动识图") only proxies back to its source route, so a pool naming it
+  routes the same model twice; the region-gated group the upstream refuses on
+  this egress (`<provider>-region`, labelled `region-limited`) is a guaranteed
+  403 the moment failover picks it. Neither is suggested, and neither is even
+  interrogated for models. This filters *advice* only: hand-written routes in
+  the config file still dispatch.
 - **Dormant routes are offered and labelled.** A provider an adapter plugin owns
   but has not activated is listed as *not activated*, since naming it is how it
   becomes usable.

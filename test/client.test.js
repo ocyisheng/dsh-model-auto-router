@@ -303,10 +303,10 @@ test('the page renders its whole tree once state has arrived', () => {
     // dormant provider has no advertised models, so only an observed one gives
     // the picker anything to show for it.
     observed: [
-      { provider: 'our-free-model-vision', model: 'space-bunny-free', count: 9 },
+      { provider: 'our-free-model', model: 'space-bunny-free', count: 9 },
       { provider: 'pi-ai', model: 'pi-free', count: 2 },
     ],
-    defaults: { provider: 'our-free-model-vision', model: 'space-bunny-free' },
+    defaults: { provider: 'our-free-model', model: 'space-bunny-free' },
     discoveredAt: 1,
   })
 

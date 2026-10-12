@@ -28,6 +28,10 @@
  *     third-party I/O. Each one is bounded, and a provider that fails or hangs
  *     contributes an error note rather than an empty answer or a stalled route.
  *
+ * A third rule narrows *what is suggested* (never what is allowed): auto-vision
+ * mirror routes and region-gated routes are left out of the inventory — see
+ * {@link isExcludedProvider}.
+ *
  * @module src/catalog.js
  */
 
@@ -39,6 +43,46 @@ export const MODEL_DISCOVERY_TIMEOUT_MS = 5_000
 
 /** How many distinct routes the runtime observer remembers. */
 export const MAX_OBSERVED_ROUTES = 200
+
+/**
+ * Provider routes the pool editor should not offer.
+ *
+ * Two families of route are *not* things a pool can sensibly target, even though
+ * they show up in `llm.listProviders()`:
+ *
+ *  - **Auto-vision mirrors** — a wrapper route another plugin registers purely so
+ *    image input is admitted (DSH's vision-router publishes `<provider>-vision`
+ *    / `"<Name> + 自动识图"`, plus its `deepseek-vision` wrapper). It dispatches
+ *    by delegating to its source route, so a pool that names it routes the text
+ *    model twice and inherits the wrapper's admission rules for no gain.
+ *  - **Region-gated routes** — the `"<Name> · region-limited"` / `<provider>-region`
+ *    group of models the upstream gateway refuses on this egress
+ *    (`This model is not available in your country`). They are separated from the
+ *    live roster *because* they fail, so letting a failover pool pick them means
+ *    a guaranteed 403 on every switch to that candidate.
+ *
+ * Matching is deliberately conservative: the id suffix and the label markers each
+ * plugin actually publishes. A route that merely *contains* one of these
+ * substrings in an unrelated position is left alone, because the catalog is
+ * advice and wrongly hiding a working route is worse than showing a useless one.
+ *
+ * @param {unknown} id
+ * @param {unknown} name
+ * @returns {boolean} true when this provider must not be suggested
+ */
+export function isExcludedProvider(id, name) {
+  const route = typeof id === 'string' ? id.trim().toLowerCase() : ''
+  if (route === '') return false
+  if (/-vision$/.test(route) || route === 'vision-chain' || route === 'deepseek-vision') return true
+  if (/-region$/.test(route)) return true
+
+  const label = typeof name === 'string' ? name.trim().toLowerCase() : ''
+  if (label === '') return false
+  if (label.includes('自动识图') || label.includes('识图模式')) return true
+  if (label.includes('region-limited') || label.includes('region limited')) return true
+  if (label.includes('地区受限') || label.includes('区域受限') || label.includes('地区限制')) return true
+  return false
+}
 
 /**
  * Record the routes this host actually dispatches.
@@ -144,6 +188,7 @@ export function buildCatalog(input = {}) {
     if (entry === null || typeof entry !== 'object') continue
     const id = typeof (/** @type {any} */ (entry).id) === 'string' ? /** @type {any} */ (entry).id.trim() : ''
     if (id === '' || seen.has(id)) continue
+    if (isExcludedProvider(id, entry.name)) continue
     seen.add(id)
     const name = typeof (/** @type {any} */ (entry).name) === 'string' && /** @type {any} */ (entry).name.trim() !== ''
       ? /** @type {any} */ (entry).name.trim()
@@ -164,6 +209,7 @@ export function buildCatalog(input = {}) {
     if (entry === null || typeof entry !== 'object') continue
     const id = typeof (/** @type {any} */ (entry).provider) === 'string' ? /** @type {any} */ (entry).provider.trim() : ''
     if (id === '' || seen.has(id) || declaredSeen.has(id)) continue
+    if (isExcludedProvider(id, entry.displayName)) continue
     declaredSeen.add(id)
     const name = typeof (/** @type {any} */ (entry).displayName) === 'string' && /** @type {any} */ (entry).displayName.trim() !== ''
       ? /** @type {any} */ (entry).displayName.trim()
@@ -177,6 +223,10 @@ export function buildCatalog(input = {}) {
     const provider = typeof route?.provider === 'string' ? route.provider.trim() : ''
     const model = typeof route?.model === 'string' ? route.model.trim() : ''
     if (provider === '' || model === '') continue
+    // An excluded route stays excluded even once dispatched: the page builds
+    // its provider list from observed routes too, and a wrapper or region-gated
+    // route that slipped through here would reappear as a suggestion.
+    if (isExcludedProvider(provider, '')) continue
     const key = `${provider}/${model}`
     if (observedSeen.has(key)) continue
     observedSeen.add(key)
@@ -206,7 +256,9 @@ function readSelection(raw) {
   if (raw === null || typeof raw !== 'object') return undefined
   const provider = typeof (/** @type {any} */ (raw).provider) === 'string' ? /** @type {any} */ (raw).provider.trim() : ''
   const model = typeof (/** @type {any} */ (raw).model) === 'string' ? /** @type {any} */ (raw).model.trim() : ''
-  return provider === '' || model === '' ? undefined : { provider, model }
+  if (provider === '' || model === '') return undefined
+  if (isExcludedProvider(provider, '')) return undefined
+  return { provider, model }
 }
 
 /**
@@ -280,6 +332,10 @@ export function createCatalogReader(deps = {}) {
     await Promise.all((Array.isArray(providers) ? providers : []).map(async entry => {
       const id = entry?.id
       if (typeof id !== 'string' || id === '') return
+      // A route that will not be suggested should not be interrogated either:
+      // discovery is third-party I/O, and the twin/region routes are by
+      // definition already covered by their source provider.
+      if (isExcludedProvider(id, entry.name)) return
       if (typeof llm.listModels !== 'function') return
       let timer
       try {

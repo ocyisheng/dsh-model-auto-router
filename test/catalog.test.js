@@ -13,7 +13,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { buildCatalog, createCatalogReader, createRouteObserver, normalizeModels } from '../src/catalog.js'
+import { buildCatalog, createCatalogReader, createRouteObserver, isExcludedProvider, normalizeModels } from '../src/catalog.js'
 
 /** A stub `llm` service with only the members the reader uses. */
 function fakeLlm({ providers = [], configurable = [], models = {}, fail = {} } = {}) {
@@ -218,12 +218,12 @@ test('observed routes and the default selection reach the catalog', async () => 
   const read = createCatalogReader({
     resolveLlm: () => llm,
     observed: () => observer.list(),
-    defaults: () => ({ provider: 'our-free-model-vision', model: 'space-bunny-free' }),
+    defaults: () => ({ provider: 'our-free-model', model: 'space-bunny-free' }),
   })
 
   const catalog = await read()
   assert.deepEqual(catalog.observed, [{ provider: 'our-free-model', model: 'space-bunny-free', count: 2 }])
-  assert.deepEqual(catalog.defaults, { provider: 'our-free-model-vision', model: 'space-bunny-free' })
+  assert.deepEqual(catalog.defaults, { provider: 'our-free-model', model: 'space-bunny-free' })
   // The provider's own list stays empty — the observation is reported as what it
   // is, so the page can say where a suggestion came from.
   assert.deepEqual(catalog.providers[0].models, [])
@@ -272,4 +272,57 @@ test('a source that throws does not take the catalog down', async () => {
   assert.deepEqual(catalog.providers[0].models, [{ id: 'a-1', name: 'a-1' }])
   assert.deepEqual(catalog.observed, [])
   assert.equal(catalog.defaults, undefined)
+})
+
+// ── auto-vision mirrors and region-gated routes are not suggested ────────────
+
+test('the exclusion recognises twin wrappers and region routes, and nothing else', () => {
+  for (const id of ['deepseek-vision', 'our-free-model-vision', 'vision-chain', 'our-free-model-region']) {
+    assert.equal(isExcludedProvider(id, ''), true, `${id} is excluded by its route id`)
+  }
+  for (const name of ['DeepSeek + 自动识图', 'Our Free Model · region-limited']) {
+    assert.equal(isExcludedProvider('whatever', name), true, `"${name}" is excluded by its label`)
+  }
+  for (const id of ['deepseek', 'our-free-model', 'provider-regional-cloud', 'review-visionless']) {
+    assert.equal(isExcludedProvider(id, ''), false, `${id} is a legitimate route`)
+  }
+  assert.equal(isExcludedProvider('', ''), false, 'a nameless route carries no signal')
+})
+
+test('the inventory omits excluded providers but keeps their sources', () => {
+  const catalog = buildCatalog({
+    providers: [
+      { id: 'our-free-model', name: 'Our Free Model' },
+      { id: 'our-free-model-vision', name: 'Our Free Model + 自动识图' },
+      { id: 'our-free-model-region', name: 'Our Free Model · region-limited' },
+      { id: 'deepseek-official', name: 'DeepSeek' },
+    ],
+    configurable: [{ provider: 'vision-router-chain', displayName: 'Vision chain (自动识图)' }],
+    observed: [
+      { provider: 'our-free-model', model: 'a', count: 1 },
+      { provider: 'our-free-model-vision', model: 'a', count: 5 },
+      { provider: 'our-free-model-region', model: 'b', count: 2 },
+    ],
+    defaults: { provider: 'deepseek-vision', model: 'deepseek-chat' },
+  })
+  assert.deepEqual(catalog.providers.map(p => p.id), ['our-free-model', 'deepseek-official'])
+  assert.deepEqual(catalog.declared, [], 'a dormant route is held to the same bar')
+  assert.deepEqual(catalog.observed, [{ provider: 'our-free-model', model: 'a', count: 1 }])
+  assert.equal(catalog.defaults, undefined, 'a default on an excluded route suggests nothing')
+})
+
+test('an excluded provider is never interrogated', async () => {
+  // Discovery is third-party I/O; the wrapper's roster mirrors its source's.
+  const llm = fakeLlm({
+    providers: [
+      { id: 'a', name: 'A' },
+      { id: 'a-vision', name: 'A + 自动识图' },
+    ],
+    models: { a: [{ id: 'a-1' }], 'a-vision': [{ id: 'a-1' }] },
+  })
+  const read = createCatalogReader({ resolveLlm: () => llm })
+
+  const catalog = await read()
+  assert.deepEqual(llm.calls, ['a'], 'only the real route was asked for models')
+  assert.deepEqual(catalog.providers.map(p => p.id), ['a'])
 })

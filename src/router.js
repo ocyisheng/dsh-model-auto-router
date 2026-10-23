@@ -281,19 +281,23 @@ export class ModelAutoRouter {
       return undefined
     }
 
+    // Check if the current route (from override or pin) is a virtual pool
+    // If so, we need to expand it to its candidates for selection
+    const effectivePrimary = this._resolveVirtualPool(primary) ?? primary
+
     const override = this._routeOverrides.get(agent?.id ?? '_anonymous')
     if (override) {
       state.route = override
       state.pool = own?.name ?? primary.name
       state.lastReason = REASON.SELECTED
       this._usage.set(override, (this._usage.get(override) ?? 0) + 1)
-      return this._asRoute(override, primary)
+      return this._asRoute(override, effectivePrimary)
     }
 
     // Candidates of the agent's own pool that are still usable. Empty means the
     // pool is fully demoted, which is the only situation that reaches the
     // global fallback pool.
-    const healthy = this._healthyCandidates(primary)
+    const healthy = this._healthyCandidates(effectivePrimary)
 
     // Anti-thrash hold. If a failover opened it, `state.failedRoute` is the route
     // we abandoned. While it is open we keep the agent on its current healthy
@@ -320,10 +324,10 @@ export class ModelAutoRouter {
         // global cooldown runs its own course; this agent simply resumes using
         // the route once it is eligible again.
         this._usage.set(state.route, (this._usage.get(state.route) ?? 0) + 1)
-        if (state.route === primary.candidates[0]?.label) {
+        if (state.route === effectivePrimary.candidates[0]?.label) {
           this._noteChange(agent?.id, undefined, state.route, REASON.RESTORED)
         }
-        return this._asRoute(state.route, primary)
+        return this._asRoute(state.route, effectivePrimary)
       }
       // Either the abandoned route is still cooling, or it healed but the route
       // we moved to has not yet proven itself: keep the healthy route we are on
@@ -350,7 +354,7 @@ export class ModelAutoRouter {
           if (previous !== keep) this._noteChange(agent?.id, previous, keep, REASON.FAILOVER)
         }
         this._usage.set(keep, (this._usage.get(keep) ?? 0) + 1)
-        return this._asRoute(keep, primary)
+        return this._asRoute(keep, effectivePrimary)
       }
     }
 
@@ -365,14 +369,14 @@ export class ModelAutoRouter {
       // clear any sub-threshold failure streak it had accumulated.
       this._health.recordSuccess(state.route)
       this._usage.set(state.route, (this._usage.get(state.route) ?? 0) + 1)
-      return this._asRoute(state.route, primary)
+      return this._asRoute(state.route, effectivePrimary)
     }
 
     // Prefer the agent's own pool. If part of it is demoted, select from what
     // remains rather than reshuffling into a known-bad route.
     const candidate = healthy.length === 0
       ? undefined
-      : selectCandidate({ strategy: primary.strategy, candidates: healthy }, { agentId: agent?.id, usage: this._usage })
+      : selectCandidate({ strategy: effectivePrimary.strategy, candidates: healthy }, { agentId: agent?.id, usage: this._usage })
 
     if (candidate) {
       // The pin was dropped by a failover, so the route being left comes from
@@ -389,7 +393,7 @@ export class ModelAutoRouter {
         this._noteChange(agent?.id, previous, candidate.label, state.lastReason)
       }
 
-      return this._asRoute(candidate.label, primary)
+      return this._asRoute(candidate.label, effectivePrimary)
     }
 
     // Own pool is fully demoted: take the first healthy spare from the global
@@ -412,14 +416,36 @@ export class ModelAutoRouter {
 
     // Nothing healthy anywhere. Degrade to the original pool order rather than
     // returning undefined, which would hand DSH back its own default model.
-    const lastResort = selectCandidate({ strategy: 'primary-failover', candidates: primary.candidates }, {})
+    const lastResort = selectCandidate({ strategy: 'primary-failover', candidates: effectivePrimary.candidates }, {})
     if (lastResort) {
       state.route = lastResort.label
       state.lastReason = REASON.NO_HEALTHY_ROUTE
-      return this._asRoute(lastResort.label, primary)
+      return this._asRoute(lastResort.label, effectivePrimary)
     }
 
     state.lastReason = REASON.NO_HEALTHY_ROUTE
+    return undefined
+  }
+
+  /**
+   * If a pool is marked as virtual, return a synthetic pool that expands
+   * the virtual pool name to its candidates for selection purposes.
+   * The returned pool has the same strategy but candidates are the virtual
+   * pool's candidates.
+   *
+   * @param {any} pool
+   * @returns {any | undefined}
+   */
+  _resolveVirtualPool(pool) {
+    if (pool?.virtual && pool.candidates?.length > 0) {
+      // Return a synthetic pool with the same strategy but the virtual pool's candidates
+      return {
+        name: pool.name,
+        strategy: pool.strategy,
+        candidates: pool.candidates,
+        virtual: false, // Don't recurse
+      }
+    }
     return undefined
   }
 
@@ -587,7 +613,7 @@ export class ModelAutoRouter {
 
   /**
    * Match a typed route against the configured pools, by exact label first and
-   * then by model id alone.
+   * then by model id alone. Also matches virtual pool names.
    *
    * @param {string} route
    * @returns {string | undefined}
@@ -597,6 +623,11 @@ export class ModelAutoRouter {
     for (const pool of pools) {
       const exact = pool.candidates.find(c => c.label === route)
       if (exact) return exact.label
+      // Also match virtual pool names
+      if (pool.virtual && pool.name === route) {
+        // Return the first candidate's label as the resolved route
+        return pool.candidates[0]?.label
+      }
     }
     for (const pool of pools) {
       const byModel = pool.candidates.find(c => c.model === route)

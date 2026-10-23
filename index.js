@@ -258,6 +258,8 @@ export function apply(ctx, config = {}) {
           return typeof selection?.currentSelection === 'function' ? selection.currentSelection() : undefined
         },
         log,
+        // Pass the router so virtual pools can be included in the catalog
+        router,
       })
 
       const api = createApiRoutes({

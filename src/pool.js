@@ -83,7 +83,7 @@ function normalizeWeight(raw) {
  * @param {{ log?: (message: string) => void }} [io]
  */
 export function normalizePools(raw, io = {}) {
-  /** @type {Map<string, { name: string, strategy: string, candidates: Array<{provider:string,model:string,weight:number,label:string}> }>} */
+  /** @type {Map<string, { name: string, strategy: string, candidates: Array<{provider:string,model:string,weight:number,label:string}>, virtual: boolean }>} */
   const pools = new Map()
 
   if (raw == null) return pools
@@ -103,6 +103,7 @@ export function normalizePools(raw, io = {}) {
     const strategy = normalizeStrategy(def.strategy)
     const declared = Array.isArray(def.candidates) ? def.candidates : []
     const source = declared.length > 0 ? declared : (Array.isArray(def.models) ? def.models : [])
+    const virtual = def.virtual === true
 
     const candidates = []
     const seen = new Set()
@@ -119,7 +120,7 @@ export function normalizePools(raw, io = {}) {
     }
 
     if (candidates.length === 0) continue
-    pools.set(name, { name, strategy, candidates })
+    pools.set(name, { name, strategy, candidates, virtual })
   }
 
   return pools
@@ -161,7 +162,7 @@ export function normalizeSinglePool(raw, io = {}) {
       seen.add(candidate.label)
       candidates.push(candidate)
     }
-    return candidates.length === 0 ? undefined : { name: '_inline', strategy, candidates }
+    return candidates.length === 0 ? undefined : { name: '_inline', strategy, candidates, virtual: def.virtual === true }
   }
 
   const provider = typeof raw === 'object' && !Array.isArray(raw)
@@ -172,7 +173,7 @@ export function normalizeSinglePool(raw, io = {}) {
   const providerPool = normalizePools({ _default: { provider: provider || undefined, candidates } }, io)
   const pool = providerPool.get('_default')
   if (!pool) return undefined
-  return { name: '_default', strategy: DEFAULT_STRATEGY, candidates: pool.candidates }
+  return { name: '_default', strategy: DEFAULT_STRATEGY, candidates: pool.candidates, virtual: false }
 }
 
 /**

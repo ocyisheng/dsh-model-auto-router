@@ -171,9 +171,10 @@ export function normalizeModels(raw) {
  *   models?: Record<string, unknown>,
  *   errors?: Record<string, string>,
  *   discoveredAt?: number,
+ *   router?: any,
  * }} input
  * @returns {{
- *   providers: Array<{ id: string, name: string, models: Array<{ id: string, name: string }>, error?: string }>,
+ *   providers: Array<{ id: string, name: string, models: Array<{ id: string, name: string }>, error?: string, virtual?: boolean }>,
  *   declared: Array<{ id: string, name: string }>,
  *   observed: Array<{ provider: string, model: string, count: number }>,
  *   defaults: { provider: string, model: string } | undefined,
@@ -183,6 +184,28 @@ export function normalizeModels(raw) {
 export function buildCatalog(input = {}) {
   const providers = []
   const seen = new Set()
+
+  // First, add virtual pools from the router configuration as special "aggregated" models
+  if (input.router) {
+    const router = input.router
+    // Get virtual pools from main, subagent, fallback
+    const allPools = [router._mainPool, router._subagentPool?.pool, router._fallbackPool].filter(Boolean)
+    for (const pool of allPools) {
+      if (pool?.virtual && pool.candidates?.length > 0) {
+        const virtualId = pool.name
+        if (!seen.has(virtualId)) {
+          seen.add(virtualId)
+          // Create a special provider entry for the virtual pool
+          providers.push({
+            id: virtualId,
+            name: virtualId, // Use the pool name as the display name
+            models: pool.candidates.map(c => ({ id: c.model, name: `${c.provider}/${c.model}` })),
+            virtual: true,
+          })
+        }
+      }
+    }
+  }
 
   for (const entry of Array.isArray(input.providers) ? input.providers : []) {
     if (entry === null || typeof entry !== 'object') continue
@@ -277,6 +300,7 @@ function readSelection(raw) {
  *   ttlMs?: number,
  *   timeoutMs?: number,
  *   now?: () => number,
+ *   router?: any,
  * }} [deps]
  * @returns {() => Promise<ReturnType<typeof buildCatalog>>}
  */
@@ -285,6 +309,7 @@ export function createCatalogReader(deps = {}) {
   const log = deps.log ?? (() => {})
   const observed = deps.observed ?? (() => [])
   const defaults = deps.defaults ?? (() => undefined)
+  const router = deps.router
   const ttlMs = deps.ttlMs ?? CATALOG_TTL_MS
   const timeoutMs = deps.timeoutMs ?? MODEL_DISCOVERY_TIMEOUT_MS
   const now = deps.now ?? (() => Date.now())
@@ -316,7 +341,7 @@ export function createCatalogReader(deps = {}) {
     // A composition with no `llm` service mounted is not an error: the observed
     // routes and the default selection still reach the page.
     if (llm === undefined || typeof llm.listProviders !== 'function') {
-      return buildCatalog({ observed: observedRoutes, defaults: selection, catalogUnavailable: true, discoveredAt: now() })
+      return buildCatalog({ observed: observedRoutes, defaults: selection, catalogUnavailable: true, discoveredAt: now(), router })
     }
 
     const providers = llm.listProviders()
@@ -357,7 +382,7 @@ export function createCatalogReader(deps = {}) {
       }
     }))
 
-    return buildCatalog({ providers, configurable, models, errors, observed: observedRoutes, defaults: selection, discoveredAt: now() })
+    return buildCatalog({ providers, configurable, models, errors, observed: observedRoutes, defaults: selection, discoveredAt: now(), router })
   }
 
   return async function read() {

@@ -282,6 +282,27 @@ inline through the profile entry.
 ]
 ```
 
+### Virtual pools (model aggregation/aliases)
+
+A pool with `virtual: true` becomes a selectable aggregated model. When the user picks the pool name (e.g. `o-deepseek-v4-flash`) in the settings page or config, the router automatically expands it to its `candidates` list and applies the pool's strategy for failover.
+
+```jsonc
+"o-deepseek-v4-flash": {
+  "virtual": true,
+  "strategy": "primary-failover",
+  "candidates": [
+    { "provider": "deepseek", "model": "deepseek-chat" },
+    { "provider": "our-free-model", "model": "deepseek-v4-flash" },
+    { "provider": "openrouter", "model": "deepseek/deepseek-chat-v4-flash" }
+  ]
+}
+```
+
+- The virtual pool name (the object key) is the user-visible aggregated model name
+- Appears in the settings page's model inventory, marked as an aggregated model
+- Supports all pool strategies (`primary-failover`, `round-robin`, etc.)
+- Failover happens automatically between candidates, no user intervention needed
+
 ### Strategies
 
 | Strategy | Behaviour |

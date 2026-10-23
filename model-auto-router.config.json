@@ -45,6 +45,27 @@
         { "provider": "deepseek", "model": "deepseek-chat" },
         { "provider": "openai", "model": "gpt-5" }
       ]
+    },
+
+    "$comment_virtual": "Virtual pools (aggregated models) - the pool name becomes a selectable model alias that expands to multiple candidates with automatic failover.",
+    "o-deepseek-v4-flash": {
+      "virtual": true,
+      "strategy": "primary-failover",
+      "candidates": [
+        { "provider": "deepseek", "model": "deepseek-chat" },
+        { "provider": "our-free-model", "model": "deepseek-v4-flash" },
+        { "provider": "openrouter", "model": "deepseek/deepseek-chat-v4-flash" }
+      ]
+    },
+
+    "o-gpt-4o-mini": {
+      "virtual": true,
+      "strategy": "primary-failover",
+      "candidates": [
+        { "provider": "openai", "model": "gpt-4o-mini" },
+        { "provider": "azure", "model": "gpt-4o-mini" },
+        { "provider": "our-free-model", "model": "gpt-4o-mini-free" }
+      ]
     }
   }
 }

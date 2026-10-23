@@ -169,6 +169,27 @@ dsh install .\dsh-model-auto-router
 ]
 ```
 
+### 虚拟池（模型聚合/别名）
+
+设置 `virtual: true` 的池会成为可直接选择的聚合模型。用户在设置页或配置中选择该池名（如 `o-deepseek-v4-flash`），路由器会自动展开为其 `candidates` 列表，并按池的策略进行故障转移。
+
+```jsonc
+"o-deepseek-v4-flash": {
+  "virtual": true,
+  "strategy": "primary-failover",
+  "candidates": [
+    { "provider": "deepseek", "model": "deepseek-chat" },
+    { "provider": "our-free-model", "model": "deepseek-v4-flash" },
+    { "provider": "openrouter", "model": "deepseek/deepseek-chat-v4-flash" }
+  ]
+}
+```
+
+- 虚拟池名称（键名）即为用户可见的聚合模型名
+- 可在设置页的模型清单中看到，标记为聚合模型
+- 支持所有池策略（`primary-failover`、`round-robin` 等）
+- 故障转移在候选之间自动进行，无需用户干预
+
 ### 策略
 
 | 策略 | 行为 |

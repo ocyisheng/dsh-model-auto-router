@@ -49,6 +49,14 @@ window.__ModuleLoader__.load({
       weight: { min: 0.01, max: 1000 },
     }
 
+    /** Virtual pool candidate bounds. */
+    const VP_LIMITS = {
+      nameMinLen: 1,
+      nameMaxLen: 64,
+      candidatesMin: 1,
+      candidatesMax: 10,
+    }
+
     /**
      * The role keys this page edits, and the only ones `rolePools` names.
      *
@@ -144,6 +152,28 @@ window.__ModuleLoader__.load({
         'catalog.dormant': '未启用',
         'catalog.unlisted': '未注册但在用',
 
+        // Virtual pools
+        'sec.virtualPools': '虚拟池（聚合模型）',
+        'sec.virtualPoolsHint': '将多个 provider/model 组合为一个聚合模型，自动故障转移',
+        'vp.name': '虚拟池名称',
+        'vp.nameHint': '如 o-deepseek-v4-flash，将在模型列表中显示',
+        'vp.strategy': '策略',
+        'vp.candidates': '候选链路',
+        'vp.provider': 'Provider',
+        'vp.model': 'Model',
+        'vp.addCandidate': '添加候选',
+        'vp.removeCandidate': '移除',
+        'vp.create': '新建虚拟池',
+        'vp.edit': '编辑',
+        'vp.delete': '删除',
+        'vp.save': '保存',
+        'vp.cancel': '取消',
+        'vp.empty': '暂无虚拟池，点击「新建虚拟池」创建',
+        'vp.nameRequired': '虚拟池名称不能为空',
+        'vp.nameExists': '该名称已存在',
+        'vp.candidatesRequired': '至少需要一个候选',
+        'vp.candidateIncomplete': '候选的 Provider 和 Model 必须都填写',
+
         'live.current': '当前',
         'live.idle': '还没有会话被路由',
         'live.sessions': '个会话',
@@ -229,6 +259,28 @@ window.__ModuleLoader__.load({
         'catalog.empty': 'No models to list on this machine yet.',
         'catalog.dormant': 'not activated',
         'catalog.unlisted': 'unregistered but in use',
+
+        // Virtual pools
+        'sec.virtualPools': 'Virtual Pools (Aggregated Models)',
+        'sec.virtualPoolsHint': 'Combine multiple provider/model pairs into one aggregated model with automatic failover',
+        'vp.name': 'Virtual Pool Name',
+        'vp.nameHint': 'e.g. o-deepseek-v4-flash; shown in the model list',
+        'vp.strategy': 'Strategy',
+        'vp.candidates': 'Candidates',
+        'vp.provider': 'Provider',
+        'vp.model': 'Model',
+        'vp.addCandidate': 'Add Candidate',
+        'vp.removeCandidate': 'Remove',
+        'vp.create': 'Create Virtual Pool',
+        'vp.edit': 'Edit',
+        'vp.delete': 'Delete',
+        'vp.save': 'Save',
+        'vp.cancel': 'Cancel',
+        'vp.empty': 'No virtual pools yet — click "Create Virtual Pool" to add one',
+        'vp.nameRequired': 'Virtual pool name is required',
+        'vp.nameExists': 'A pool with this name already exists',
+        'vp.candidatesRequired': 'At least one candidate is required',
+        'vp.candidateIncomplete': 'Both Provider and Model must be filled for each candidate',
 
         'live.current': 'Now',
         'live.idle': 'No session routed yet',
@@ -444,10 +496,10 @@ window.__ModuleLoader__.load({
       const taken = new Set(Object.keys(pools ?? {}))
       if (!taken.has(base)) return base
       for (let i = 2; i < 1000; i++) {
-        const candidate = `${base}-${i}`
+        const candidate = base + '-' + i
         if (!taken.has(candidate)) return candidate
       }
-      return `${base}-${Date.now()}`
+      return base + '-' + Date.now()
     }
 
     // ── the simple view's model: ordered lists onto named pools ──────────────
@@ -537,7 +589,7 @@ window.__ModuleLoader__.load({
       if (typeof strategy === 'string' && STRATEGIES.includes(strategy)) next.strategy = strategy
       pools[name] = next
 
-      const patch = { pools, [`${role}Pool`]: name }
+      const patch = { pools, [role + 'Pool']: name }
       if (role === 'subagent') patch.inheritMain = false
       return patch
     }
@@ -610,10 +662,10 @@ window.__ModuleLoader__.load({
         className: 'mr_select',
         style: { width: 'auto', minWidth: '130px' },
         value,
-        title: title ?? t(`strategy.${value}.hint`),
+        title: title ?? t('strategy.' + value + '.hint'),
         'aria-label': t('list.strategy'),
         onChange: event => onChange(event.target.value),
-      }, STRATEGIES.map(id => h('option', { key: id, value: id }, t(`strategy.${id}`))))
+      }, STRATEGIES.map(id => h('option', { key: id, value: id }, t('strategy.' + id))))
     }
 
     // ── the model picker ──────────────────────────────────────────────────────
@@ -685,7 +737,7 @@ window.__ModuleLoader__.load({
               title: t('picker.toggleGroup'),
               onClick: () => toggle(group.provider.id),
             },
-            h('span', { className: `mr_chevron ${isOpen(group.provider.id) ? 'open' : ''}` }, '▸'),
+            h('span', { className: 'mr_chevron ' + (isOpen(group.provider.id) ? 'open' : '') }, '▸'),
             group.provider.name,
             h('span', { className: 'mr_badge' }, String(group.models.length))),
             group.provider.live === false ? h('span', { className: 'mr_badge' }, t('catalog.dormant')) : null,
@@ -742,7 +794,7 @@ window.__ModuleLoader__.load({
       if (routes.length === 0) return h('p', { className: 'mr_note' }, empty)
 
       return h('ol', { className: 'mr_list' }, routes.map((route, index) => h('li', {
-        key: `${route.provider}\u0000${route.model}\u0000${index}`,
+        key: route.provider + '\u0000' + route.model + '\u0000' + index,
         className: 'mr_item',
       },
       h('span', { className: 'mr_rank' }, String(index + 1)),
@@ -816,6 +868,205 @@ window.__ModuleLoader__.load({
             title: t('health.cooldownHint'),
             onChange: event => set({ cooldownMs: event.target.value }),
           })))
+    }
+
+    // ── virtual pool manager ────────────────────────────────────────────────────
+    /**
+     * Manage virtual pools (aggregated models) directly from the settings page.
+     *
+     * A virtual pool is a named pool with `virtual: true` and a list of candidates.
+     * It appears in the catalog as a selectable "aggregated model" and expands to
+     * its candidates with failover at request time.
+     */
+    function VirtualPoolManager(props) {
+      const { draft, t, update, catalog } = props
+
+      const [editingId, setEditingId] = useState(null)
+      const [editForm, setEditForm] = useState({ name: '', strategy: 'primary-failover', candidates: [{ provider: '', model: '' }] })
+      const [error, setError] = useState('')
+
+      const pools = draft.pools ?? {}
+      const virtualPools = Object.entries(pools).filter(([, pool]) => pool?.virtual === true)
+
+      // Build a list of known providers/models from catalog for autocomplete
+      const knownProviders = catalog?.allProviders?.map(p => p.id) ?? []
+      const knownModelsByProvider = {}
+      if (catalog?.modelsByProvider) {
+        for (const [provider, models] of catalog.modelsByProvider.entries()) {
+          knownModelsByProvider[provider] = models.map(m => m.id)
+        }
+      }
+
+      const validateForm = (form) => {
+        if (!form.name.trim()) return t('vp.nameRequired')
+        if (editingId === null && pools[form.name.trim()]) return t('vp.nameExists')
+        if (editingId !== null && form.name.trim() !== editingId && pools[form.name.trim()]) return t('vp.nameExists')
+        if (form.candidates.length === 0) return t('vp.candidatesRequired')
+        for (const c of form.candidates) {
+          if (!c.provider.trim() || !c.model.trim()) return t('vp.candidateIncomplete')
+        }
+        return null
+      }
+
+      const startCreate = () => {
+        setEditingId('__new__')
+        setEditForm({ name: '', strategy: 'primary-failover', candidates: [{ provider: '', model: '' }] })
+        setError('')
+      }
+
+      const startEdit = (id) => {
+        const pool = pools[id]
+        setEditingId(id)
+        setEditForm({
+          name: id,
+          strategy: pool.strategy ?? 'primary-failover',
+          candidates: (pool.candidates ?? []).map(c => ({
+            provider: c.provider ?? '',
+            model: c.model ?? '',
+          }))
+        })
+        setError('')
+      }
+
+      const cancelEdit = () => {
+        setEditingId(null)
+        setError('')
+      }
+
+      const saveEdit = () => {
+        const err = validateForm(editForm)
+        if (err) { setError(err); return }
+
+        const name = editForm.name.trim()
+        const nextPools = { ...pools }
+
+        if (editingId !== '__new__' && editingId !== name) {
+          // Renamed: delete old
+          delete nextPools[editingId]
+        }
+
+        nextPools[name] = {
+          virtual: true,
+          strategy: editForm.strategy,
+          candidates: editForm.candidates.map(c => ({
+            provider: c.provider.trim(),
+            model: c.model.trim(),
+          })),
+        }
+
+        update({ pools: nextPools })
+        setEditingId(null)
+        setError('')
+      }
+
+      const deletePool = (id) => {
+        const nextPools = { ...pools }
+        delete nextPools[id]
+        // Also clear role pointers if they point to this pool
+        const nextDraft = { ...draft, pools: nextPools }
+        for (const role of ['main', 'subagent', 'fallback']) {
+          if (rolePools(nextDraft)[role] === id) {
+            nextDraft[role + 'Pool'] = ''
+          }
+        }
+        update(nextDraft)
+      }
+
+      const addCandidate = () => {
+        setEditForm(f => ({ ...f, candidates: [...f.candidates, { provider: '', model: '' }] }))
+      }
+
+      const removeCandidate = (index) => {
+        setEditForm(f => ({ ...f, candidates: f.candidates.filter((_, i) => i !== index) }))
+      }
+
+      const updateCandidate = (index, field, value) => {
+        setEditForm(f => {
+          const next = f.candidates.slice()
+          next[index] = { ...next[index], [field]: value }
+          return { ...f, candidates: next }
+        })
+      }
+
+      if (virtualPools.length === 0 && editingId === null) {
+        return h('div', { className: 'mr_body' },
+          h('p', { className: 'mr_note' }, t('vp.empty')),
+          h(Button, { onClick: startCreate, kind: 'primary' }, t('vp.create'))
+        )
+      }
+
+      return h('div', { className: 'mr_body' },
+        virtualPools.map(([id, pool]) => h('div', { key: id, className: 'mr_card', style: { marginBottom: '10px' } },
+          h('div', { className: 'mr_sechead' },
+            h('span', { className: 'mr_sec_title' }, id),
+            h('span', { className: 'mr_badge', style: { background: 'var(--dsw-alias-state-success-primary)', color: 'var(--dsw-alias-label-primary-foreground)', border: 'none' } }, t('catalog.unlisted')),
+            h('span', { className: 'mr_sec_hint' }, t('vp.strategy') + ': ' + t('strategy.' + (pool.strategy ?? 'primary-failover'))),
+            h('span', { className: 'mr_sec_hint' }, (pool.candidates?.length ?? 0) + ' ' + t('vp.candidates')),
+            h('span', { className: 'mr_spacer' }),
+            h(Button, { onClick: () => startEdit(id), size: 'sm' }, t('vp.edit')),
+            h(Button, { onClick: () => deletePool(id), kind: 'danger', size: 'sm' }, t('vp.delete'))),
+          h('div', { className: 'mr_chips' }, (pool.candidates ?? []).map((c, i) =>
+            h('span', { key: i, className: 'mr_routechip', style: { background: 'color-mix(in srgb, var(--dsw-alias-state-success-primary) 10%, var(--dsw-alias-button-elevated-fill))', borderColor: 'var(--dsw-alias-state-success-primary)' } },
+              h('span', { className: 'mr_mono' }, c.provider + '/' + c.model)
+            )
+          ))
+        )),
+
+        editingId !== null
+          ? h('div', { className: 'mr_card', style: { marginTop: '10px' } },
+              h('div', { className: 'mr_sechead' },
+                h('span', { className: 'mr_sec_title' }, editingId === '__new__' ? t('vp.create') : t('vp.edit'))),
+              h('div', { className: 'mr_body' },
+                error && h('div', { className: 'mr_callout error' }, error),
+                h('div', { className: 'mr_field' },
+                  h('span', null, t('vp.name')),
+                  h('input', {
+                    className: 'mr_input',
+                    value: editForm.name,
+                    placeholder: t('vp.nameHint'),
+                    onChange: e => setEditForm(f => ({ ...f, name: e.target.value })),
+                  })),
+                h('div', { className: 'mr_field' },
+                  h('span', null, t('vp.strategy')),
+                  h('select', {
+                    className: 'mr_select',
+                    value: editForm.strategy,
+                    onChange: e => setEditForm(f => ({ ...f, strategy: e.target.value })),
+                  }, STRATEGIES.map(s => h('option', { key: s, value: s }, t('strategy.' + s)))),
+                h('div', { className: 'mr_field' },
+                  h('span', null, t('vp.candidates')),
+                  h(Button, { onClick: addCandidate, kind: 'ghost', size: 'sm' }, t('vp.addCandidate'))),
+                editForm.candidates.map((c, i) => h('div', { key: i, className: 'mr_row', style: { alignItems: 'center' } },
+                  h('input', {
+                    className: 'mr_input',
+                    placeholder: t('vp.provider'),
+                    value: c.provider,
+                    style: { flex: 1 },
+                    onChange: e => updateCandidate(i, 'provider', e.target.value),
+                    list: 'mr-provider-list',
+                  }),
+                  h('input', {
+                    className: 'mr_input',
+                    placeholder: t('vp.model'),
+                    value: c.model,
+                    style: { flex: 1 },
+                    onChange: e => updateCandidate(i, 'model', e.target.value),
+                    list: 'mr-model-list-' + c.provider,
+                  }),
+                  h(Button, { onClick: () => removeCandidate(i), kind: 'danger', size: 'sm', disabled: editForm.candidates.length <= 1 }, t('vp.removeCandidate')))
+                ),
+                h('div', { className: 'mr_row', style: { justifyContent: 'flex-end', marginTop: '8px' } },
+                  h(Button, { onClick: cancelEdit, kind: 'ghost' }, t('vp.cancel')),
+                  h(Button, { onClick: saveEdit, kind: 'primary' }, t('vp.save')))
+                )
+              )
+            )
+          : null,
+
+        virtualPools.length > 0
+          ? h(Button, { onClick: startCreate, kind: 'ghost', style: { marginTop: '8px' } }, t('vp.create'))
+          : null
+      )
     }
 
     // ── page ──────────────────────────────────────────────────────────────────
@@ -999,12 +1250,12 @@ window.__ModuleLoader__.load({
             })),
           h('p', { className: 'mr_tagline' }, t('subtitle')),
           h('p', { className: 'mr_live' },
-            h('span', { className: `mr_dot ${current === undefined ? '' : 'ok'}` }),
+            h('span', { className: 'mr_dot ' + (current === undefined ? '' : 'ok') }),
             current === undefined
               ? t('live.idle')
-              : h(Fragment, null, `${t('live.current')} `, h('span', { className: 'mr_mono' }, current.route)),
-            ` · ${(runtime.assignments ?? []).length} ${t('live.sessions')}`,
-            cooling > 0 ? ` · ${cooling} ${t('live.cooling')}` : null)),
+              : h(Fragment, null, t('live.current') + ' ', h('span', { className: 'mr_mono' }, current.route)),
+            ' · ' + (runtime.assignments ?? []).length + ' ' + t('live.sessions'),
+            cooling > 0 ? ' · ' + cooling + ' ' + t('live.cooling') : null)),
 
         state.fileError !== undefined && state.fileError !== ''
           ? h('div', { className: 'mr_callout error' }, h('b', null, t('loadFailed')), h('div', null, state.fileError))
@@ -1038,7 +1289,7 @@ window.__ModuleLoader__.load({
               type: 'button',
               'aria-pressed': target === role ? 'true' : 'false',
               onClick: () => setTarget(role),
-            }, t(`target.${role}`))))),
+            }, t('target.' + role))))),
         },
         h(InventoryPicker, {
           catalog,
@@ -1057,6 +1308,13 @@ window.__ModuleLoader__.load({
           )),
         })),
 
+        // Virtual Pool Manager section
+        h(Section, {
+          title: t('sec.virtualPools'),
+          hint: t('sec.virtualPoolsHint'),
+        },
+        h(VirtualPoolManager, { draft, t, update, catalog })),
+
         listSection('main', t('sec.main'), t('sec.mainHint'), t('list.emptyMain')),
 
         // No "follow main" switch here: an empty list already means that, since
@@ -1073,7 +1331,7 @@ window.__ModuleLoader__.load({
           h('summary', { style: { cursor: 'pointer', fontSize: '12.5px', fontWeight: 600 } }, t('diag.title')),
           h('div', { className: 'mr_body', style: { marginTop: '10px' } },
             h('p', { className: 'mr_path' },
-              `${t('state.file')}: ${state.configPath}${state.fileExists ? '' : ` — ${t('state.fileMissing')}`}`),
+              `${t('state.file')}: ${state.configPath}${state.fileExists ? '' : ' — ' + t('state.fileMissing')}`),
             h('div', { className: 'mr_row' },
               h(Button, { kind: 'ghost', disabled: busy, onClick: () => void toggleReport() },
                 report === undefined ? t('report') : t('reportHide')),
@@ -1088,7 +1346,7 @@ window.__ModuleLoader__.load({
             busy ? t('saving') : t('save')),
           h(Button, { kind: 'ghost', disabled: busy || !dirty, onClick: onRevert }, t('revert')),
           h('span', { className: 'mr_status' },
-            h('span', { className: `mr_dot ${dirty ? 'warn' : 'ok'}` }),
+            h('span', { className: 'mr_dot ' + (dirty ? 'warn' : 'ok') }),
             dirty ? t('unsaved') : t('saved'))))
     }
 
